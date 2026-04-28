@@ -371,6 +371,24 @@ class FTTransformer(nn.Module):
             "total": total
         }
     
+    def count_parameters(self) -> int:
+        """
+        Get total number of trainable parameters (backward compatibility).
+        
+        This method returns just the integer count for backward compatibility
+        with older code that expected get_param_count() to return an int.
+        
+        Returns:
+            int: Total number of trainable parameters
+        
+        Examples:
+            >>> model = FTTransformer(config, training_config)
+            >>> params = model.count_parameters()
+            >>> print(f"Model has {params:,} trainable parameters")
+            Model has 103138 trainable parameters
+        """
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+    
     @property
     def total_parameters(self) -> int:
         """Count total trainable parameters."""

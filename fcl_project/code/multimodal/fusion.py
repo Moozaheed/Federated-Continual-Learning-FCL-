@@ -21,15 +21,16 @@ class MultimodalFCLModel(nn.Module):
         
         # Branch B: Tabular Extractor (FT-Transformer)
         self.tabular_branch = FTTransformer(config.model, config.training)
-        # Modify tabular branch to return features instead of logits
-        # We'll use the internal components of FTTransformer
         
         # Fusion Layer
         combined_dim = self.image_branch.feature_dim + config.model.token_dim
         
+        # Use LayerNorm instead of BatchNorm for stability in federated settings
+        # BatchNorm requires batch_size > 1, which can fail in federated scenarios
+        # with small batches or single samples. LayerNorm is instance-based.
         self.fusion_mlp = nn.Sequential(
             nn.Linear(combined_dim, config.multimodal.hidden_dim),
-            nn.BatchNorm1d(config.multimodal.hidden_dim),
+            nn.LayerNorm(config.multimodal.hidden_dim),  # More stable than BatchNorm
             nn.ReLU(),
             nn.Dropout(config.model.mlp_dropout),
             nn.Linear(config.multimodal.hidden_dim, config.multimodal.hidden_dim // 2),

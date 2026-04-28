@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torchvision.models as models
+import os
 from typing import Optional, Dict
 
 class MobileNetExtractor(nn.Module):
@@ -27,7 +28,12 @@ class MobileNetExtractor(nn.Module):
     - Efficient for real-time inference and federated scenarios
     """
     
-    def __init__(self, backbone_type: str = "mobilenet_v3_small", pretrained: bool = True):
+    def __init__(
+        self,
+        backbone_type: str = "mobilenet_v3_small",
+        pretrained: bool = True,
+        weights_path: Optional[str] = None
+    ):
         """
         Initialize MobileNetV3 feature extractor.
         
@@ -36,25 +42,32 @@ class MobileNetExtractor(nn.Module):
                 - "mobilenet_v3_small": 576-dim features, ~2.5M parameters
                 - "mobilenet_v3_large": 960-dim features, ~5.4M parameters
             pretrained: If True, load weights from ImageNet pretraining
+            weights_path: Optional path to local weights file for offline environments.
+                If provided, will load from this path instead of downloading.
+                Useful for hospital systems without internet access.
         
         Raises:
             ValueError: If backbone_type not supported
+            FileNotFoundError: If weights_path provided but file not found
         
         Examples:
+            >>> # Online mode
             >>> extractor = MobileNetExtractor("mobilenet_v3_small", pretrained=True)
-            >>> print(extractor.feature_dim)  # 576
-            >>> x = torch.randn(32, 3, 224, 224)
-            >>> features = extractor(x)
-            >>> features.shape
-            torch.Size([32, 576])
+            
+            >>> # Offline mode with local weights
+            >>> extractor = MobileNetExtractor(
+            ...     "mobilenet_v3_small",
+            ...     pretrained=False,
+            ...     weights_path="/hospital/models/mobilenet_v3_small.pth"
+            ... )
         """
         super().__init__()
         
-        # Load backbone with automatic feature dimension detection
+        # Load backbone
         if backbone_type == "mobilenet_v3_small":
-            self.backbone = models.mobilenet_v3_small(pretrained=pretrained)
+            self.backbone = models.mobilenet_v3_small(pretrained=False)
         elif backbone_type == "mobilenet_v3_large":
-            self.backbone = models.mobilenet_v3_large(pretrained=pretrained)
+            self.backbone = models.mobilenet_v3_large(pretrained=False)
         else:
             raise ValueError(
                 f"Unsupported backbone: {backbone_type}. "
@@ -63,14 +76,68 @@ class MobileNetExtractor(nn.Module):
         
         self.backbone_type = backbone_type
         
+        # Load weights (online or offline)
+        if weights_path is not None:
+            # Offline mode: load from provided path
+            if not os.path.exists(weights_path):
+                raise FileNotFoundError(
+                    f"Weights file not found at {weights_path}. "
+                    f"Please ensure the file exists for offline operation."
+                )
+            self.backbone.load_state_dict(torch.load(weights_path, map_location='cpu'))
+        elif pretrained:
+            # Online mode: download pretrained ImageNet weights
+            # Note: This requires internet connection
+            if backbone_type == "mobilenet_v3_small":
+                self.backbone = models.mobilenet_v3_small(pretrained=True)
+            else:
+                self.backbone = models.mobilenet_v3_large(pretrained=True)
+        
         # Dynamically detect feature dimension
-        # Extract from classifier input dimension before replacing it
         self.feature_dim = self._get_feature_dim()
         
-        # Remove the classification head, keep as Identity
-        # MobileNetV3 has: features → avgpool → classifier
-        # We want: features → avgpool → [our output]
+        # Remove the classification head
         self.backbone.classifier = nn.Identity()
+    
+    @staticmethod
+    def download_pretrained_weights(backbone_type: str = "mobilenet_v3_small", save_path: str = "/hospital/models/") -> str:
+        """
+        Download and cache pretrained weights for offline use.
+        
+        Useful for hospital systems to pre-download weights before deployment
+        in offline environments.
+        
+        Args:
+            backbone_type: Which backbone to download
+            save_path: Directory to save weights
+        
+        Returns:
+            Path to saved weights file
+        
+        Examples:
+            >>> path = MobileNetExtractor.download_pretrained_weights(
+            ...     backbone_type="mobilenet_v3_small",
+            ...     save_path="/hospital/models/"
+            ... )
+            >>> print(f"Weights saved to {path}")
+        """
+        import os
+        os.makedirs(save_path, exist_ok=True)
+        
+        # Load model (triggers download if not cached)
+        if backbone_type == "mobilenet_v3_small":
+            model = models.mobilenet_v3_small(pretrained=True)
+        elif backbone_type == "mobilenet_v3_large":
+            model = models.mobilenet_v3_large(pretrained=True)
+        else:
+            raise ValueError(f"Unsupported backbone: {backbone_type}")
+        
+        # Save to disk
+        weights_file = os.path.join(save_path, f"{backbone_type}_pretrained.pth")
+        torch.save(model.state_dict(), weights_file)
+        
+        print(f"✓ Weights downloaded and saved to {weights_file}")
+        return weights_file
     
     def _get_feature_dim(self) -> int:
         """

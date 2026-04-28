@@ -114,53 +114,27 @@ class DERConfig:
         
         return True
     
-    # Backward compatibility aliases
-    @property
-    def num_numerical_features(self) -> int:
-        """Alias for input_dim (backward compatibility)."""
-        return self.input_dim
-    
-    @property
-    def embedding_dim(self) -> int:
-        """Alias for token_dim (backward compatibility)."""
-        return self.token_dim
-    
-    @property
-    def num_transformer_blocks(self) -> int:
-        """Alias for n_transformer_blocks (backward compatibility)."""
-        return self.n_transformer_blocks
-    
-    @property
-    def num_classes(self) -> int:
-        """Alias for output_dim (backward compatibility)."""
-        return self.output_dim
-    
-    @property
-    def use_prompts(self) -> bool:
-        """Alias for checking if prompts are used (backward compatibility)."""
-        return self.n_prompt_tokens > 0
-    
-    @property
-    def num_prompts(self) -> int:
-        """Alias for n_prompt_tokens (backward compatibility)."""
-        return self.n_prompt_tokens
-    
-    @classmethod
-    def get_total_params(cls) -> int:
-        """Estimated total parameters for this architecture."""
-        # Rough calculation:
-        # - Feature embeddings: input_dim * token_dim
-        # - Prompt tokens: n_prompt_tokens * token_dim
-        # - 3 transformer blocks, each with attention + MLP
-        return 52_466  # Validated from model instantiation
+    def get_config_dict(self) -> Dict[str, any]:
+        """
+        Return configuration as dictionary for logging/tracking.
+        
+        Returns:
+            Dictionary with all DER++ configuration parameters
+        """
+        return {
+            'enabled': self.enabled,
+            'buffer_size': self.buffer_size,
+            'alpha': self.alpha,
+            'beta': self.beta,
+            'batch_size': self.batch_size,
+            'use_logits': self.use_logits,
+            'sampling_strategy': self.sampling_strategy,
+            'use_biased_weights': self.use_biased_weights
+        }
 
-
-# ============================================================================
-# TRAINING PARAMETERS
-# ============================================================================
 
 class TrainingConfig:
-    """Training loop hyperparameters."""
+    """Training hyperparameters."""
     
     # Optimizer
     learning_rate: float = 1e-3
@@ -178,6 +152,11 @@ class TrainingConfig:
     
     # Device
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+# ============================================================================
+# TRAINING PARAMETERS
+# ============================================================================
 
 
 # ============================================================================

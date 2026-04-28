@@ -83,121 +83,6 @@ def load_uci_heart_disease(
     return X, y
 
 
-def load_multimodal_data(
-    n_samples: int = 200,
-    image_size: Tuple[int, int] = (224, 224),
-    random_state: int = 42,
-    normalize: bool = True
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Simulate multimodal data: EHR (tabular) + Clinical Images.
-    """
-    # 1. Load Tabular EHR
-    X_tab, y = load_uci_heart_disease(n_samples, random_state, normalize)
-    
-    # 2. Simulate paired clinical images
-    # In a real scenario, these would be Chest X-rays or ECG waveforms
-    # Here we generate synthetic patterns correlated with the labels
-    np.random.seed(random_state)
-    X_img = np.random.randn(n_samples, 3, *image_size).astype(np.float32)
-    
-    # Inject signal into images based on labels
-    for i in range(n_samples):
-        if y[i] == 1:
-            # Add a 'high-risk' pattern (e.g., increase intensity in a specific region)
-            X_img[i, :, 50:150, 50:150] += 0.5
-            
-    return X_img, X_tab, y
-
-
-def create_multimodal_data_loaders(
-    X_img_train: np.ndarray,
-    X_tab_train: np.ndarray,
-    y_train: np.ndarray,
-    X_img_val: np.ndarray,
-    X_tab_val: np.ndarray,
-    y_val: np.ndarray,
-    batch_size: int = 32
-) -> Tuple[DataLoader, DataLoader]:
-    """Create DataLoaders for Multimodal training."""
-    train_dataset = TensorDataset(
-        torch.FloatTensor(X_img_train),
-        torch.FloatTensor(X_tab_train),
-        torch.LongTensor(y_train)
-    )
-    val_dataset = TensorDataset(
-        torch.FloatTensor(X_img_val),
-        torch.FloatTensor(X_tab_val),
-        torch.LongTensor(y_val)
-    )
-    
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-    
-    return train_loader, val_loader
-
-
-def fit_multimodal(
-    model: torch.nn.Module,
-    train_loader: DataLoader,
-    val_loader: DataLoader,
-    num_epochs: int = 10,
-    learning_rate: float = 1e-3,
-    device: str = "cpu",
-    der_buffer: Optional[object] = None,
-    alpha: float = 0.1,
-    beta: float = 0.5,
-    verbose: bool = True
-) -> Dict:
-    """Advanced Multimodal Training with DER++ support."""
-    model = model.to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    criterion = torch.nn.CrossEntropyLoss()
-    
-    history = {'train_loss': [], 'val_loss': [], 'val_acc': []}
-    
-    for epoch in range(num_epochs):
-        model.train()
-        total_loss = 0
-        for imgs, tabs, labels in train_loader:
-            imgs, tabs, labels = imgs.to(device), tabs.to(device), labels.to(device)
-            
-            # Forward pass
-            logits = model(imgs, tabs)
-            loss = criterion(logits, labels)
-            
-            # DER++ Regularization
-            if der_buffer is not None and der_buffer.n_samples > 0:
-                b_imgs, b_tabs, b_labels, b_logits = der_buffer.get_batch(imgs.size(0))
-                
-                # Model output on buffer samples
-                out_buffer = model(b_imgs, b_tabs)
-                
-                # Dark knowledge MSE + Replay CE
-                reg_loss = F.mse_loss(out_buffer, b_logits) * alpha
-                reg_loss += F.cross_entropy(out_buffer, b_labels) * beta
-                loss += reg_loss
-            
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            
-            # Update buffer with current task data
-            if der_buffer is not None:
-                with torch.no_grad():
-                    current_logits = model(imgs, tabs)
-                der_buffer.add_data(imgs, tabs, labels, current_logits)
-            
-            total_loss += loss.item()
-            
-        # Validation... (truncated for brevity in example, full implementation would follow)
-        history['train_loss'].append(total_loss / len(train_loader))
-        if verbose:
-            print(f"Epoch {epoch+1}/{num_epochs} | Loss: {total_loss/len(train_loader):.4f}")
-            
-    return history
-
-
 def create_non_iid_splits(
     X: np.ndarray,
     y: np.ndarray,
@@ -486,10 +371,8 @@ def compute_metrics(
         try:
             auc_val = roc_auc_score(y_true, y_pred_proba[:, 1])
             metrics['roc_auc'] = auc_val
-            metrics['auc_roc'] = auc_val
         except:
             metrics['roc_auc'] = 0.0
-            metrics['auc_roc'] = 0.0
     
     return metrics
 
