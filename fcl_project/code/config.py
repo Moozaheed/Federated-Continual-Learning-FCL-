@@ -45,12 +45,74 @@ class MultimodalConfig:
     hidden_dim: int = 256  # Dimension after fusion
 
 class DERConfig:
-    """Dark Experience Replay (DER++) configuration."""
+    """
+    Dark Experience Replay (DER++) Configuration.
+    
+    DER++ combines experience replay with knowledge distillation (logit matching)
+    to prevent catastrophic forgetting in continual learning scenarios.
+    
+    Reference: "Dark Experience for General Continual Learning" (Buzzega et al., 2021)
+    
+    Attributes:
+        enabled: Whether to use DER++ in training pipeline
+        buffer_size: Maximum samples stored in replay buffer (memory constraint)
+        alpha: Weight for logit matching loss (dark knowledge from past tasks)
+               Range: [0.0, 1.0], higher = more weight on replay logits
+        beta: Weight for standard cross-entropy loss on replay samples
+              Range: [0.0, 1.0], typically alpha + beta ≤ 1.0
+        batch_size: Number of samples to replay per batch (trade-off: memory vs stability)
+        use_logits: Whether to store and use logits (dark knowledge) from past models
+        sampling_strategy: "reservoir" (uniform) or "recent" (biased towards recent samples)
+        use_biased_weights: Whether to apply importance weighting to replay samples
+    """
     enabled: bool = True
-    buffer_size: int = 2000  # Number of samples to store in replay buffer
-    alpha: float = 0.1  # Weight for logit matching (dark knowledge)
-    beta: float = 0.5   # Weight for standard replay (labels)
-    batch_size: int = 32 # Replay batch size
+    buffer_size: int = 2000
+    alpha: float = 0.3      # Weight for logit matching (dark knowledge)
+    beta: float = 0.7       # Weight for standard replay (labels)
+    batch_size: int = 32
+    use_logits: bool = True # Store and use logits for knowledge distillation
+    sampling_strategy: str = "reservoir"  # "reservoir" or "recent"
+    use_biased_weights: bool = False  # For future importance weighting
+    
+    def validate(self) -> bool:
+        """
+        Validate DER++ configuration parameters.
+        
+        Returns:
+            bool: True if valid, raises ValueError otherwise
+        
+        Raises:
+            ValueError: If any parameter is invalid
+        """
+        errors: List[str] = []
+        
+        # Validate buffer size
+        if self.buffer_size <= 0:
+            errors.append(f"buffer_size must be > 0, got {self.buffer_size}")
+        if self.buffer_size > 10000:
+            errors.append(f"buffer_size > 10000 may cause memory issues")
+        
+        # Validate loss weights
+        if not (0.0 <= self.alpha <= 1.0):
+            errors.append(f"alpha must be in [0.0, 1.0], got {self.alpha}")
+        if not (0.0 <= self.beta <= 1.0):
+            errors.append(f"beta must be in [0.0, 1.0], got {self.beta}")
+        
+        # Validate batch size
+        if self.batch_size <= 0:
+            errors.append(f"batch_size must be > 0, got {self.batch_size}")
+        if self.batch_size > self.buffer_size:
+            errors.append(f"batch_size ({self.batch_size}) should not exceed buffer_size ({self.buffer_size})")
+        
+        # Validate sampling strategy
+        valid_strategies = ["reservoir", "recent"]
+        if self.sampling_strategy not in valid_strategies:
+            errors.append(f"sampling_strategy must be in {valid_strategies}, got {self.sampling_strategy}")
+        
+        if errors:
+            raise ValueError("DERConfig validation failed:\n" + "\n".join(f"  - {e}" for e in errors))
+        
+        return True
     
     # Backward compatibility aliases
     @property

@@ -233,15 +233,43 @@ class FTTransformer(nn.Module):
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def extract_features(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass through FT-Transformer.
+        Extract feature representations without classification.
+        
+        Extracts the normalized CLS token representation after passing through
+        all transformer blocks and layer normalization. This is useful for:
+        - Multimodal fusion (concatenating image + tabular features)
+        - Similarity/distance metrics in continual learning
+        - Dimensionality reduction and visualization
+        - Transfer learning to downstream tasks
+        
+        Architecture Flow:
+        1. Feature Tokenization: x → tokens (batch_size, input_dim, token_dim)
+        2. Prompt Tuning: tokens → tokens + prompts
+        3. Transformer Blocks: Apply self-attention and MLP
+        4. Extract CLS Token: Take first token (semantic aggregation)
+        5. Final LayerNorm: Normalize features
+        
+        Note: Does NOT apply classification head.
         
         Args:
-            x: (batch_size, input_dim) - clinical features
+            x: (batch_size, input_dim) - raw clinical features
         
         Returns:
-            logits: (batch_size, output_dim) - class logits
+            features: (batch_size, token_dim) - extracted feature vectors
+        
+        Examples:
+            >>> model = FTTransformer(config, training_config)
+            >>> x = torch.randn(32, 13)  # 32 samples, 13 features
+            >>> features = model.extract_features(x)
+            >>> features.shape
+            torch.Size([32, 128])  # token_dim = 128
+            
+            >>> # Use in multimodal fusion
+            >>> tab_features = model.extract_features(X_tab)  # (batch, 128)
+            >>> img_features = image_model(X_img)  # (batch, 128)
+            >>> fused = torch.cat([tab_features, img_features], dim=1)  # (batch, 256)
         """
         # Feature tokenization
         tokens = self.feature_tokenizer(x)  # (batch_size, input_dim, token_dim)
@@ -253,11 +281,26 @@ class FTTransformer(nn.Module):
         for block in self.transformer_blocks:
             tokens = block(tokens)
         
-        # Use first token ([CLS] token semantics) for classification
+        # Use first token ([CLS] token semantics) for feature extraction
         cls_token = tokens[:, 0, :]  # (batch_size, token_dim)
         
-        # Final normalization
+        # Final normalization for stable features
         cls_token = self.final_norm(cls_token)
+        
+        return cls_token
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass through FT-Transformer.
+        
+        Args:
+            x: (batch_size, input_dim) - clinical features
+        
+        Returns:
+            logits: (batch_size, output_dim) - class logits
+        """
+        # Extract features (up to LayerNorm)
+        cls_token = self.extract_features(x)
         
         # Classification head
         logits = self.head(cls_token)  # (batch_size, output_dim)
