@@ -15,6 +15,7 @@ from code.config import (
     PrivacyConfig,
     DataConfig,
     config,
+    DEFAULT_CONFIG,
 )
 
 from code.model import (
@@ -30,6 +31,8 @@ from code.utils import (
     load_uci_heart_disease,
     create_non_iid_splits,
     create_data_loaders,
+    fit,
+    evaluate,
     compute_metrics,
     compute_backward_transfer,
     compute_forward_transfer,
@@ -50,6 +53,7 @@ __all__ = [
     'PrivacyConfig',
     'DataConfig',
     'config',
+    'DEFAULT_CONFIG',
     # Model
     'FTTransformer',
     'FeatureTokenizer',
@@ -61,6 +65,8 @@ __all__ = [
     'load_uci_heart_disease',
     'create_non_iid_splits',
     'create_data_loaders',
+    'fit',
+    'evaluate',
     'compute_metrics',
     'compute_backward_transfer',
     'compute_forward_transfer',

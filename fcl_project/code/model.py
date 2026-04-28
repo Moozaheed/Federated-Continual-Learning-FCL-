@@ -301,6 +301,10 @@ class FTTransformer(nn.Module):
         """Extract prompt tokens (for parameter efficiency analysis)."""
         return self.prompt_tuning.prompts.clone()
     
+    def get_param_count(self) -> int:
+        """Get total parameter count (backward compatibility alias)."""
+        return self.total_parameters
+    
     @property
     def total_parameters(self) -> int:
         """Count total trainable parameters."""
@@ -312,18 +316,53 @@ class FTTransformer(nn.Module):
         return self.prompt_tuning.prompts.numel()
 
 
-def create_model(config: ModelConfig, training_config: TrainingConfig, device: str = "cpu") -> FTTransformer:
+def create_model(
+    config: Optional[ModelConfig] = None,
+    training_config: Optional[TrainingConfig] = None,
+    device: str = "cpu",
+    # Backward compatibility keyword arguments
+    num_numerical_features: Optional[int] = None,
+    embedding_dim: Optional[int] = None,
+    num_transformer_blocks: Optional[int] = None,
+    num_classes: Optional[int] = None,
+    **kwargs
+) -> FTTransformer:
     """
     Factory function to create FT-Transformer model.
     
+    Supports both:
+    1. Config object approach: create_model(config, training_config, device)
+    2. Keyword argument approach: create_model(num_numerical_features=13, num_classes=2, ...)
+    
     Args:
-        config: Model configuration
-        training_config: Training configuration
+        config: Model configuration object (or None to use kwargs)
+        training_config: Training configuration object
         device: Device to create model on
+        num_numerical_features: Input dimension (backward compat)
+        embedding_dim: Token/embedding dimension (backward compat)
+        num_transformer_blocks: Number of transformer blocks (backward compat)
+        num_classes: Output dimension (backward compat)
+        **kwargs: Additional arguments (ignored)
     
     Returns:
         FTTransformer instance
     """
+    # If config not provided, use keyword arguments
+    if config is None:
+        config = ModelConfig()
+        if num_numerical_features is not None:
+            config.input_dim = num_numerical_features
+        if embedding_dim is not None:
+            config.token_dim = embedding_dim
+        if num_transformer_blocks is not None:
+            config.n_transformer_blocks = num_transformer_blocks
+        if num_classes is not None:
+            config.output_dim = num_classes
+    
+    # If training_config not provided, use default
+    if training_config is None:
+        training_config = TrainingConfig()
+    
     model = FTTransformer(config, training_config)
     model = model.to(device)
     return model

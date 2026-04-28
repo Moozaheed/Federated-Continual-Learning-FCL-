@@ -33,6 +33,27 @@ class ModelConfig:
     # Output
     output_dim: int = 2  # Binary classification (presence/absence of disease)
     
+    # Backward compatibility aliases
+    @property
+    def num_numerical_features(self) -> int:
+        """Alias for input_dim (backward compatibility)."""
+        return self.input_dim
+    
+    @property
+    def embedding_dim(self) -> int:
+        """Alias for token_dim (backward compatibility)."""
+        return self.token_dim
+    
+    @property
+    def num_transformer_blocks(self) -> int:
+        """Alias for n_transformer_blocks (backward compatibility)."""
+        return self.n_transformer_blocks
+    
+    @property
+    def num_classes(self) -> int:
+        """Alias for output_dim (backward compatibility)."""
+        return self.output_dim
+    
     @classmethod
     def get_total_params(cls) -> int:
         """Estimated total parameters for this architecture."""
@@ -270,6 +291,9 @@ class FCLConfig:
 
 # Global configuration instance (used throughout the project)
 config = FCLConfig()
+
+# Backward compatibility alias
+DEFAULT_CONFIG = config
 
 if __name__ == "__main__":
     # Print full configuration when script is run directly

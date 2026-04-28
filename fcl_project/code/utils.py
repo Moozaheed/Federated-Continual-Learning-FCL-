@@ -173,6 +173,159 @@ def create_data_loaders(
 
 
 # ============================================================================
+# TRAINING & EVALUATION
+# ============================================================================
+
+def fit(
+    model: torch.nn.Module,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    epochs: int = 10,
+    learning_rate: float = 1e-3,
+    device: str = "cpu",
+    verbose: bool = True
+) -> Dict[str, List[float]]:
+    """
+    Train a PyTorch model with validation.
+    
+    Args:
+        model: PyTorch model to train
+        train_loader: Training data loader
+        val_loader: Validation data loader
+        epochs: Number of epochs to train
+        learning_rate: Learning rate for optimizer
+        device: Device to train on
+        verbose: Whether to print progress
+    
+    Returns:
+        Dictionary with training history:
+        {
+            'train_loss': [...],
+            'val_loss': [...],
+            'train_acc': [...],
+            'val_acc': [...]
+        }
+    """
+    model = model.to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    criterion = torch.nn.CrossEntropyLoss()
+    
+    history = {
+        'train_loss': [],
+        'val_loss': [],
+        'train_acc': [],
+        'val_acc': []
+    }
+    
+    for epoch in range(epochs):
+        # Training phase
+        model.train()
+        train_loss = 0.0
+        train_correct = 0
+        train_total = 0
+        
+        for batch_x, batch_y in train_loader:
+            batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+            
+            # Forward pass
+            outputs = model(batch_x)
+            loss = criterion(outputs, batch_y)
+            
+            # Backward pass
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            
+            # Metrics
+            train_loss += loss.item()
+            _, predicted = torch.max(outputs, 1)
+            train_correct += (predicted == batch_y).sum().item()
+            train_total += batch_y.size(0)
+        
+        train_loss /= len(train_loader)
+        train_acc = train_correct / train_total
+        
+        # Validation phase
+        model.eval()
+        val_loss = 0.0
+        val_correct = 0
+        val_total = 0
+        
+        with torch.no_grad():
+            for batch_x, batch_y in val_loader:
+                batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+                
+                outputs = model(batch_x)
+                loss = criterion(outputs, batch_y)
+                
+                val_loss += loss.item()
+                _, predicted = torch.max(outputs, 1)
+                val_correct += (predicted == batch_y).sum().item()
+                val_total += batch_y.size(0)
+        
+        val_loss /= len(val_loader)
+        val_acc = val_correct / val_total
+        
+        # Store history
+        history['train_loss'].append(train_loss)
+        history['val_loss'].append(val_loss)
+        history['train_acc'].append(train_acc)
+        history['val_acc'].append(val_acc)
+        
+        if verbose and (epoch + 1) % max(1, epochs // 5) == 0:
+            print(f"Epoch {epoch+1:3d}/{epochs} | "
+                  f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | "
+                  f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}")
+    
+    return history
+
+
+def evaluate(
+    model: torch.nn.Module,
+    test_loader: DataLoader,
+    device: str = "cpu"
+) -> Dict[str, float]:
+    """
+    Evaluate model on test set.
+    
+    Args:
+        model: PyTorch model to evaluate
+        test_loader: Test data loader
+        device: Device to evaluate on
+    
+    Returns:
+        Dictionary with evaluation metrics
+    """
+    model = model.to(device)
+    model.eval()
+    
+    all_predictions = []
+    all_targets = []
+    all_probabilities = []
+    
+    with torch.no_grad():
+        for batch_x, batch_y in test_loader:
+            batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+            
+            outputs = model(batch_x)
+            probabilities = torch.softmax(outputs, dim=1)
+            _, predicted = torch.max(outputs, 1)
+            
+            all_predictions.extend(predicted.cpu().numpy())
+            all_targets.extend(batch_y.cpu().numpy())
+            all_probabilities.extend(probabilities.cpu().numpy())
+    
+    all_predictions = np.array(all_predictions)
+    all_targets = np.array(all_targets)
+    all_probabilities = np.array(all_probabilities)
+    
+    # Compute metrics
+    metrics = compute_metrics(all_targets, all_predictions, all_probabilities)
+    
+    return metrics
+
+
+# ============================================================================
 # METRICS & EVALUATION
 # ============================================================================
 
