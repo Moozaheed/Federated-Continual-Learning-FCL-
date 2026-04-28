@@ -325,6 +325,8 @@ def create_model(
     embedding_dim: Optional[int] = None,
     num_transformer_blocks: Optional[int] = None,
     num_classes: Optional[int] = None,
+    num_prompts: Optional[int] = None,
+    use_prompts: Optional[bool] = None,
     **kwargs
 ) -> FTTransformer:
     """
@@ -342,6 +344,8 @@ def create_model(
         embedding_dim: Token/embedding dimension (backward compat)
         num_transformer_blocks: Number of transformer blocks (backward compat)
         num_classes: Output dimension (backward compat)
+        num_prompts: Number of prompt tokens (backward compat)
+        use_prompts: Whether to use prompts (backward compat)
         **kwargs: Additional arguments (ignored)
     
     Returns:
@@ -358,6 +362,10 @@ def create_model(
             config.n_transformer_blocks = num_transformer_blocks
         if num_classes is not None:
             config.output_dim = num_classes
+        if num_prompts is not None:
+            config.n_prompt_tokens = num_prompts
+        if use_prompts is False:
+            config.n_prompt_tokens = 0
     
     # If training_config not provided, use default
     if training_config is None:

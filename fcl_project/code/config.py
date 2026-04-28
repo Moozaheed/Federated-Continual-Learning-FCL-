@@ -54,6 +54,16 @@ class ModelConfig:
         """Alias for output_dim (backward compatibility)."""
         return self.output_dim
     
+    @property
+    def use_prompts(self) -> bool:
+        """Alias for checking if prompts are used (backward compatibility)."""
+        return self.n_prompt_tokens > 0
+    
+    @property
+    def num_prompts(self) -> int:
+        """Alias for n_prompt_tokens (backward compatibility)."""
+        return self.n_prompt_tokens
+    
     @classmethod
     def get_total_params(cls) -> int:
         """Estimated total parameters for this architecture."""
