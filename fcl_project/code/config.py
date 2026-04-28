@@ -17,22 +17,40 @@ class ModelConfig:
     input_dim: int = 13  # Clinical features (UCI Heart Disease)
     
     # Feature tokenization
-    token_dim: int = 64  # Embedding dimension for each feature token
+    token_dim: int = 192  # Increased for advanced run (from 64)
     n_feature_tokens: int = input_dim  # One token per feature
     
     # Prompt tuning
-    n_prompt_tokens: int = 5  # Learnable task-specific tokens
+    n_prompt_tokens: int = 10  # Increased for advanced run (from 5)
     prompt_init_std: float = 0.02
     
     # Transformer blocks
-    n_transformer_blocks: int = 3
+    n_transformer_blocks: int = 6  # Increased for advanced run (from 3)
     n_attention_heads: int = 8
     attention_dropout: float = 0.1
-    mlp_hidden_factor: int = 2  # Hidden dim = token_dim * mlp_hidden_factor
+    mlp_hidden_factor: int = 4  # Increased for advanced run (from 2)
     mlp_dropout: float = 0.1
     
     # Output
     output_dim: int = 2  # Binary classification (presence/absence of disease)
+
+class MultimodalConfig:
+    """Configuration for Multimodal branch (Image + Tabular)."""
+    enabled: bool = True
+    image_size: Tuple[int, int] = (224, 224)
+    image_channels: int = 3
+    cnn_backbone: str = "mobilenet_v3_small"
+    feature_dim: int = 576  # Output of MobileNetV3-Small GAP
+    fusion_strategy: str = "concat"  # "concat" or "attention"
+    hidden_dim: int = 256  # Dimension after fusion
+
+class DERConfig:
+    """Dark Experience Replay (DER++) configuration."""
+    enabled: bool = True
+    buffer_size: int = 2000  # Number of samples to store in replay buffer
+    alpha: float = 0.1  # Weight for logit matching (dark knowledge)
+    beta: float = 0.5   # Weight for standard replay (labels)
+    batch_size: int = 32 # Replay batch size
     
     # Backward compatibility aliases
     @property
@@ -263,6 +281,8 @@ class FCLConfig:
     
     def __init__(self):
         self.model = ModelConfig()
+        self.multimodal = MultimodalConfig()
+        self.der = DERConfig()
         self.training = TrainingConfig()
         self.continual = ContinualLearningConfig()
         self.federated = FederatedConfig()
@@ -275,6 +295,8 @@ class FCLConfig:
         """Convert all configs to dictionary."""
         return {
             "model": self.model.__dict__,
+            "multimodal": self.multimodal.__dict__,
+            "der": self.der.__dict__,
             "training": self.training.__dict__,
             "continual": self.continual.__dict__,
             "federated": self.federated.__dict__,
