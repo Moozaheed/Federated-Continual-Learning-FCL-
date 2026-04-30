@@ -1,10 +1,10 @@
 # Federated Continual Learning for Medical Imaging
 
-A multimodal federated continual learning framework combining feature-level DER++ replay with differential privacy, evaluated on clinically realistic non-IID distributions across three medical imaging domains.
+A multimodal federated continual learning framework combining feature-level DER++ replay with differential privacy, evaluated on clinically realistic non-IID distributions across eight medical imaging tasks spanning seven domains.
 
 ## Research Contribution
 
-> We propose the first multimodal federated continual learning framework for medical imaging that combines feature-level DER++ replay with differential privacy, evaluated on clinically realistic non-IID distributions across three medical imaging domains (PathMNIST, BloodMNIST, DermaMNIST) with four federated clients.
+> We propose the first multimodal federated continual learning framework for medical imaging that combines feature-level DER++ replay with differential privacy, evaluated on clinically realistic non-IID distributions across eight tasks: six single-label MedMNIST datasets (PathMNIST, BloodMNIST, DermaMNIST, RetinaMNIST, TissueMNIST, OrganMNIST), multi-label ChestMNIST (14 thoracic findings), and MIMIC-CXR (14 clinical findings, 259K images) with four federated clients.
 
 **Target venues:** IEEE JBHI, IEEE TNNLS, Nature Digital Medicine
 
@@ -24,7 +24,7 @@ fcl_project/
 │   ├── visualization.py         # Publication-grade 300 DPI figures
 │   ├── datasets/
 │   │   ├── medmnist.py          # MedMNIST loader (7 datasets)
-│   │   ├── mimic_cxr.py         # MIMIC-CXR loader
+│   │   ├── mimic_cxr.py         # MIMIC-CXR loader (multi-label)
 │   │   ├── chexpert.py          # CheXpert loader
 │   │   └── loader.py            # Federated split utilities
 │   ├── multimodal/
@@ -38,7 +38,7 @@ fcl_project/
 │       └── analysis.py          # Hyperparameter sensitivity sweeps
 ├── scripts/
 │   └── download_datasets.py     # Download MedMNIST datasets
-└── tests/unit/                  # 136 unit tests
+└── tests/unit/                  # 166 unit tests
 ```
 
 ## Setup
@@ -58,6 +58,8 @@ python scripts/download_datasets.py
 
 Downloads 7 MedMNIST datasets (~500 MB) into `data/medmnist/`.
 
+MIMIC-CXR data (20 GB) must be obtained separately from [PhysioNet](https://physionet.org/content/mimic-cxr/) and placed in `data/mimic/`.
+
 ## Run Tests
 
 ```bash
@@ -65,7 +67,7 @@ cd fcl_project
 python -m pytest tests/ -v
 ```
 
-All 136 tests should pass.
+All 166 tests should pass.
 
 ## Run Experiments
 
@@ -75,6 +77,7 @@ All 136 tests should pass.
 cd fcl_project
 python -m code.experiments.run_experiments \
     --data_dir data/medmnist \
+    --datasets path blood \
     --cl_strategy finetune ewc \
     --fl_strategy fedavg \
     --seeds 42 \
@@ -83,7 +86,7 @@ python -m code.experiments.run_experiments \
     --output_dir results/quick_test
 ```
 
-### Full Experiment Grid (~12 hours)
+### 6-Task Single-Label MedMNIST (~6 hours)
 
 ```bash
 python -m code.experiments.run_experiments \
@@ -96,7 +99,25 @@ python -m code.experiments.run_experiments \
     --fl_rounds 20 \
     --local_epochs 5 \
     --warmup_epochs 5 \
-    --output_dir results/main_experiment
+    --output_dir results/6task_experiment
+```
+
+### 8-Task Full Grid with MIMIC-CXR (~24 hours)
+
+```bash
+python -m code.experiments.run_experiments \
+    --data_dir data/medmnist \
+    --include_chest \
+    --include_mimic \
+    --mimic_data_dir data/mimic \
+    --cl_strategy all \
+    --fl_strategy all \
+    --seeds 42 123 456 \
+    --n_clients 4 \
+    --non_iid_alphas 0.5 \
+    --fl_rounds 20 \
+    --local_epochs 5 \
+    --output_dir results/8task_experiment
 ```
 
 See [`fcl_project/context/RUN_CONTEXT.md`](fcl_project/context/RUN_CONTEXT.md) for the complete execution guide including sensitivity sweeps, non-IID analysis, expected outputs, and troubleshooting.
@@ -114,11 +135,13 @@ See [`fcl_project/context/RUN_CONTEXT.md`](fcl_project/context/RUN_CONTEXT.md) f
 
 ## Experiment Design
 
-**Tasks:** PathMNIST (9 classes) &rarr; BloodMNIST (8 classes) &rarr; DermaMNIST (7 classes)
+**Single-label tasks (6):** PathMNIST (9 classes) &rarr; BloodMNIST (8) &rarr; DermaMNIST (7) &rarr; RetinaMNIST (5) &rarr; TissueMNIST (8) &rarr; OrganMNIST (11)
+
+**Multi-label tasks (2):** ChestMNIST (14 findings) &rarr; MIMIC-CXR (14 findings, 259K images)
 
 **Federation:** 4 clients with Dirichlet non-IID data distribution
 
-**Grid:** 3 seeds x 4 CL strategies x 2 FL strategies = 24 experiments
+**Full grid:** 3 seeds x 4 CL strategies x 2 FL strategies = 24 experiments per configuration
 
 ## References
 

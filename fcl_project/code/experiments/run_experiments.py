@@ -8,6 +8,10 @@ Usage examples:
     python -m code.experiments.run_experiments --cl_strategy finetune ewc \\
         --fl_strategy fedavg --seeds 42 --fl_rounds 5 --local_epochs 2
 
+    # 8-task with MIMIC-CXR
+    python -m code.experiments.run_experiments --include_chest --include_mimic \\
+        --mimic_data_dir data/mimic --cl_strategy all --fl_strategy all
+
     # Hyperparameter sensitivity
     python -m code.experiments.run_experiments --mode sensitivity
 
@@ -44,8 +48,8 @@ from code.utils import get_cosine_warmup_scheduler
 
 logger = logging.getLogger(__name__)
 
-TASK_DATASETS = ['path', 'blood', 'derma']
-TASK_N_CLASSES = [9, 8, 7]
+TASK_DATASETS = ['path', 'blood', 'derma', 'retina', 'tissue', 'organ']
+TASK_N_CLASSES = [9, 8, 7, 5, 8, 11]
 
 
 # ---------------------------------------------------------------------------
@@ -56,14 +60,18 @@ class MultiHeadImageModel(nn.Module):
     """MobileNetV3-Small backbone with per-task classification heads.
 
     Shared backbone extracts 576-dim features; separate heads map to
-    task-specific label spaces (PathMNIST=9, BloodMNIST=8, DermaMNIST=7).
+    task-specific label spaces. Supports both single-label (softmax) and
+    multi-label (sigmoid) tasks — the head architecture is identical,
+    only the loss function differs.
     """
 
-    def __init__(self, task_n_classes: List[int], pretrained: bool = True):
+    def __init__(self, task_n_classes: List[int], pretrained: bool = True,
+                 task_types: Optional[List[str]] = None):
         super().__init__()
         self.backbone = models.mobilenet_v3_small(pretrained=pretrained)
         self.feature_dim = 576
         self.backbone.classifier = nn.Identity()
+        self.task_types = task_types or ['single_label'] * len(task_n_classes)
 
         self.heads = nn.ModuleDict()
         for i, nc in enumerate(task_n_classes):
@@ -98,6 +106,17 @@ def set_seed(seed: int):
 
 
 # ---------------------------------------------------------------------------
+# Loss factory
+# ---------------------------------------------------------------------------
+
+def get_criterion(task_type: str) -> nn.Module:
+    """Return correct loss function for task type."""
+    if task_type == 'multi_label':
+        return nn.BCEWithLogitsLoss()
+    return nn.CrossEntropyLoss()
+
+
+# ---------------------------------------------------------------------------
 # Dataset loading
 # ---------------------------------------------------------------------------
 
@@ -107,7 +126,7 @@ def load_task_datasets(
 ) -> List[Dict]:
     """Load MedMNIST datasets as sequential tasks.
 
-    Returns list of dicts with keys: train, val, test, n_classes, name.
+    Returns list of dicts with keys: train, val, test, n_classes, name, task_type.
     """
     if datasets is None:
         datasets = TASK_DATASETS
@@ -118,17 +137,39 @@ def load_task_datasets(
         val_ds = MedMNISTDataset(data_dir, dataset_name=ds_name, split='val')
         test_ds = MedMNISTDataset(data_dir, dataset_name=ds_name, split='test')
         info = MedMNISTDataset.get_info(ds_name)
+        task_type = 'multi_label' if info.get('multi_label', False) else 'single_label'
         tasks.append({
             'train': train_ds,
             'val': val_ds,
             'test': test_ds,
             'n_classes': info['n_classes'],
             'name': info['name'],
+            'task_type': task_type,
         })
         logger.info(f"Loaded {info['name']}: train={len(train_ds)}, "
                      f"val={len(val_ds)}, test={len(test_ds)}, "
-                     f"classes={info['n_classes']}")
+                     f"classes={info['n_classes']}, type={task_type}")
     return tasks
+
+
+def load_mimic_task(data_dir: str = 'data/mimic') -> Dict:
+    """Load MIMIC-CXR as a single multi-label task."""
+    from code.datasets.mimic_cxr import MIMICCXRDataset
+    train_ds = MIMICCXRDataset(data_dir, split='train')
+    val_ds = MIMICCXRDataset(data_dir, split='val')
+    test_ds = MIMICCXRDataset(data_dir, split='test')
+    info = MIMICCXRDataset.get_info()
+    logger.info(f"Loaded MIMIC-CXR: train={len(train_ds)}, "
+                f"val={len(val_ds)}, test={len(test_ds)}, "
+                f"findings={info['n_findings']}, type=multi_label")
+    return {
+        'train': train_ds,
+        'val': val_ds,
+        'test': test_ds,
+        'n_classes': info['n_findings'],
+        'name': 'MIMIC-CXR',
+        'task_type': 'multi_label',
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -190,8 +231,9 @@ def run_single_experiment(
     t0 = time.time()
     n_tasks = len(tasks)
     task_classes = [t['n_classes'] for t in tasks]
+    task_types = [t.get('task_type', 'single_label') for t in tasks]
 
-    model = MultiHeadImageModel(task_classes, pretrained=True).to(device)
+    model = MultiHeadImageModel(task_classes, pretrained=True, task_types=task_types).to(device)
     server = make_fl_server(fl_strategy_name, model, device, mu=mu)
     cl = make_cl_strategy(cl_strategy_name, device, **cl_kwargs)
     acc_matrix = AccuracyMatrix(n_tasks)
@@ -202,17 +244,20 @@ def run_single_experiment(
     ]
 
     for task_id in range(n_tasks):
-        logger.info(f"--- Task {task_id}: {tasks[task_id]['name']} ---")
+        task_type = task_types[task_id]
+        logger.info(f"--- Task {task_id}: {tasks[task_id]['name']} ({task_type}) ---")
         cl.pre_task(model, task_id)
 
         client_subsets = create_dirichlet_splits(
-            tasks[task_id]['train'], n_clients, alpha, seed=seed + task_id
+            tasks[task_id]['train'], n_clients, alpha,
+            seed=seed + task_id, task_type=task_type,
         )
         client_loaders = [
             DataLoader(s, batch_size=batch_size, shuffle=True, num_workers=2)
             for s in client_subsets
         ]
         client_weights = [len(s) for s in client_subsets]
+        criterion = get_criterion(task_type)
 
         for fl_round in range(fl_rounds):
             client_models = [copy.deepcopy(server.global_model).to(device) for _ in range(n_clients)]
@@ -228,8 +273,9 @@ def run_single_experiment(
 
                 sd = train_client_local(
                     cm, client_loaders[cid], opt,
-                    nn.CrossEntropyLoss(), device, total_ep,
+                    criterion, device, total_ep,
                     task_id=task_id,
+                    task_type=task_type,
                     global_params=global_params,
                     mu=mu if fl_strategy_name == 'fedprox' else 0.0,
                     scheduler=sched,
@@ -241,18 +287,26 @@ def run_single_experiment(
 
             if (fl_round + 1) % max(1, fl_rounds // 4) == 0:
                 model.load_state_dict(server.global_model.state_dict())
-                accs = evaluate_all_tasks(model, test_loaders[:task_id + 1], device)
-                logger.info(f"  Round {fl_round+1}/{fl_rounds} | Accs: {[f'{a:.3f}' for a in accs]}")
+                accs = evaluate_all_tasks(
+                    model, test_loaders[:task_id + 1], device,
+                    task_types=task_types[:task_id + 1],
+                )
+                logger.info(f"  Round {fl_round+1}/{fl_rounds} | Scores: {[f'{a:.3f}' for a in accs]}")
 
         model.load_state_dict(server.global_model.state_dict())
-        cl.post_task(model, task_id, client_loaders[0])
+        cl.post_task(model, task_id, client_loaders[0], task_type=task_type)
 
-        accs = evaluate_all_tasks(model, test_loaders[:task_id + 1], device)
+        accs = evaluate_all_tasks(
+            model, test_loaders[:task_id + 1], device,
+            task_types=task_types[:task_id + 1],
+        )
         for j, a in enumerate(accs):
             acc_matrix.update(task_id, j, a)
         logger.info(f"After task {task_id}: {[f'{a:.3f}' for a in accs]}")
 
-    auc_scores = compute_roc_auc_per_task(model, test_loaders, device)
+    auc_scores = compute_roc_auc_per_task(
+        model, test_loaders, device, task_types=task_types,
+    )
     elapsed = time.time() - t0
 
     result = {
@@ -263,6 +317,7 @@ def run_single_experiment(
         'n_clients': n_clients,
         'fl_rounds': fl_rounds,
         'local_epochs': local_epochs,
+        'task_types': task_types,
         **acc_matrix.to_dict(),
         'roc_auc_per_task': auc_scores,
         'roc_auc_mean': float(np.mean(auc_scores)),
@@ -298,9 +353,19 @@ class ExperimentRunner:
 
     def run_all(self):
         tasks = load_task_datasets(self.args.data_dir, self.args.datasets)
+
+        if getattr(self.args, 'include_chest', False) and 'chest' not in self.args.datasets:
+            chest_tasks = load_task_datasets(self.args.data_dir, ['chest'])
+            tasks.extend(chest_tasks)
+
+        if getattr(self.args, 'include_mimic', False):
+            mimic_dir = getattr(self.args, 'mimic_data_dir', 'data/mimic')
+            tasks.append(load_mimic_task(mimic_dir))
+
         total = (len(self.args.seeds) * len(self.args.cl_strategy)
                  * len(self.args.fl_strategy) * len(self.args.non_iid_alphas))
-        logger.info(f"Running {total} experiments on {self.device}")
+        logger.info(f"Running {total} experiments on {self.device} "
+                     f"with {len(tasks)} tasks: {[t['name'] for t in tasks]}")
 
         idx = 0
         for seed in self.args.seeds:
@@ -394,7 +459,7 @@ class ExperimentRunner:
         # Figure 1: Accuracy matrix heatmaps (last seed of each strategy combo)
         for (cl, fl, alpha), runs in grouped.items():
             matrix = np.array(runs[-1]['matrix'])
-            fig, ax = plt.subplots(figsize=(5, 4))
+            fig, ax = plt.subplots(figsize=(max(5, matrix.shape[1] * 0.8), max(4, matrix.shape[0] * 0.7)))
             sns.heatmap(matrix, annot=True, fmt='.3f', cmap='YlOrRd',
                         xticklabels=[f'Task {i}' for i in range(matrix.shape[1])],
                         yticklabels=[f'After {i}' for i in range(matrix.shape[0])],
@@ -453,7 +518,14 @@ def main():
         description='FCL Experiment Runner for Q1 Journal Publication'
     )
     parser.add_argument('--data_dir', type=str, default='fcl_project/data/medmnist')
-    parser.add_argument('--datasets', nargs='+', default=['path', 'blood', 'derma'])
+    parser.add_argument('--datasets', nargs='+',
+                        default=['path', 'blood', 'derma', 'retina', 'tissue', 'organ'])
+    parser.add_argument('--include_chest', action='store_true',
+                        help='Add ChestMNIST (multi-label) as additional task')
+    parser.add_argument('--include_mimic', action='store_true',
+                        help='Add MIMIC-CXR (multi-label) as final task')
+    parser.add_argument('--mimic_data_dir', type=str, default='data/mimic',
+                        help='Path to MIMIC-CXR data directory')
     parser.add_argument('--cl_strategy', nargs='+', default=['all'])
     parser.add_argument('--fl_strategy', nargs='+', default=['all'])
     parser.add_argument('--seeds', nargs='+', type=int, default=[42, 123, 456])

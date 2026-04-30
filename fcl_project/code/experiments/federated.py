@@ -83,6 +83,7 @@ def train_client_local(
     device: str,
     local_epochs: int,
     task_id: int = 0,
+    task_type: str = 'single_label',
     global_params: Optional[Dict[str, torch.Tensor]] = None,
     mu: float = 0.0,
     scheduler=None,
@@ -94,6 +95,7 @@ def train_client_local(
       - FedProx proximal term (when mu > 0 and global_params provided)
       - CL strategy loss augmentation (when cl_strategy provided)
       - LR scheduling (when scheduler provided)
+      - Multi-label tasks (when task_type == 'multi_label')
     """
     model.train()
     for epoch in range(local_epochs):
@@ -102,18 +104,24 @@ def train_client_local(
                 images, labels = batch[0].to(device), batch[1].to(device)
             else:
                 images = batch['image'].to(device)
-                labels = batch['label'].to(device)
+                if task_type == 'multi_label':
+                    labels = batch['labels'].to(device).float()
+                else:
+                    key = 'label' if 'label' in batch else 'labels'
+                    labels = batch[key].to(device)
 
             optimizer.zero_grad()
             logits = model(images, task_id=task_id)
 
-            if labels.dim() > 1:
+            if task_type != 'multi_label' and labels.dim() > 1:
                 labels = labels.argmax(dim=1)
 
             loss = criterion(logits, labels)
 
             if cl_strategy is not None:
-                loss = loss + cl_strategy.compute_loss(model, logits, labels, task_id)
+                loss = loss + cl_strategy.compute_loss(
+                    model, logits, labels, task_id, task_type=task_type
+                )
 
             if mu > 0 and global_params is not None:
                 loss = loss + fedprox_local_loss(model, global_params, mu)
@@ -132,19 +140,28 @@ def create_dirichlet_splits(
     n_clients: int,
     alpha: float,
     seed: int = 42,
+    task_type: str = 'single_label',
 ) -> List[Subset]:
     """Non-IID federated splits using Dirichlet distribution.
 
-    Lower alpha → more heterogeneous. alpha → inf gives IID.
+    Lower alpha -> more heterogeneous. alpha -> inf gives IID.
+    For multi-label datasets, uses argmax of multi-hot vector as pseudo-class.
     """
     rng = np.random.RandomState(seed)
     n_data = len(dataset)
 
     if hasattr(dataset, 'labels') and dataset.labels is not None:
-        labels = np.asarray(dataset.labels).flatten()
+        raw_labels = np.asarray(dataset.labels)
+        if raw_labels.ndim > 1 and raw_labels.shape[1] > 1:
+            labels = raw_labels.argmax(axis=1)
+        else:
+            labels = raw_labels.flatten()
     else:
         sample = dataset[0]
-        key = 'label' if 'label' in sample else 'labels'
+        if task_type == 'multi_label' and 'labels' in sample:
+            key = 'labels'
+        else:
+            key = 'label' if 'label' in sample else 'labels'
         raw = [dataset[i][key] for i in range(n_data)]
         labels = np.array([
             l.item() if isinstance(l, torch.Tensor) and l.dim() == 0

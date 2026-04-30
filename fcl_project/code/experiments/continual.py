@@ -22,6 +22,24 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Batch extraction helper
+# ---------------------------------------------------------------------------
+
+def _extract_cl_batch(batch, device: str, task_type: str = 'single_label'):
+    """Extract images and labels from a batch, respecting task_type."""
+    if isinstance(batch, (list, tuple)):
+        return batch[0].to(device), batch[1].to(device)
+
+    images = batch['image'].to(device)
+    if task_type == 'multi_label':
+        labels = batch['labels'].to(device).float()
+    else:
+        key = 'label' if 'label' in batch else 'labels'
+        labels = batch[key].to(device)
+    return images, labels
+
+
+# ---------------------------------------------------------------------------
 # Abstract base
 # ---------------------------------------------------------------------------
 
@@ -35,7 +53,7 @@ class ContinualStrategy(ABC):
         self, model: nn.Module, logits: torch.Tensor,
         labels: torch.Tensor, task_id: int, **kwargs
     ) -> torch.Tensor:
-        """Return additional CL loss (added to CE). Zero if none."""
+        """Return additional CL loss (added to main loss). Zero if none."""
 
     @abstractmethod
     def post_task(
@@ -92,22 +110,23 @@ class EWCStrategy(ContinualStrategy):
 
     def post_task(self, model, task_id, train_loader, **kw):
         """Compute diagonal Fisher and store optimal params."""
+        task_type = kw.get('task_type', 'single_label')
         model.eval()
         fisher = {n: torch.zeros_like(p) for n, p in model.named_parameters() if p.requires_grad}
         n_samples = 0
 
         for batch in train_loader:
-            if isinstance(batch, (list, tuple)):
-                images, labels = batch[0].to(self.device), batch[1].to(self.device)
-            else:
-                images = batch['image'].to(self.device)
-                labels = batch['label'].to(self.device)
+            images, labels = _extract_cl_batch(batch, self.device, task_type)
 
             model.zero_grad()
             logits = model(images, task_id=task_id)
-            if labels.dim() > 1:
-                labels = labels.argmax(dim=1)
-            loss = F.cross_entropy(logits, labels)
+
+            if task_type == 'multi_label':
+                loss = F.binary_cross_entropy_with_logits(logits, labels)
+            else:
+                if labels.dim() > 1:
+                    labels = labels.argmax(dim=1)
+                loss = F.cross_entropy(logits, labels)
             loss.backward()
 
             for n, p in model.named_parameters():
@@ -133,7 +152,12 @@ class EWCStrategy(ContinualStrategy):
 # ---------------------------------------------------------------------------
 
 class FeatureDERBuffer:
-    """Lightweight replay buffer storing extracted features, not raw images."""
+    """Lightweight replay buffer storing extracted features, not raw images.
+
+    Labels are always stored as single-label integers (multi-label tasks
+    are reduced via argmax before storage). The primary DER++ signal is
+    logit matching, so this is a minor approximation.
+    """
 
     def __init__(self, buffer_size: int = 5000, device: str = 'cpu'):
         self.buffer_size = buffer_size
@@ -153,11 +177,19 @@ class FeatureDERBuffer:
         lab = labels.detach().cpu()
         tid = task_ids.detach().cpu()
 
+        if lab.dim() > 1:
+            lab = lab.argmax(dim=1)
+
         if self.features is None:
             self.features = torch.zeros(self.buffer_size, feat.size(1))
             self.logits = torch.zeros(self.buffer_size, log.size(1))
-            self.labels = torch.zeros(self.buffer_size, dtype=lab.dtype)
+            self.labels = torch.zeros(self.buffer_size, dtype=torch.long)
             self._task_ids = torch.zeros(self.buffer_size, dtype=torch.long)
+
+        if log.size(1) > self.logits.size(1):
+            old = self.logits
+            self.logits = torch.zeros(self.buffer_size, log.size(1))
+            self.logits[:, :old.size(1)] = old
 
         for i in range(feat.size(0)):
             if self.n_samples < self.buffer_size:
@@ -169,7 +201,8 @@ class FeatureDERBuffer:
                     continue
                 idx = j
             self.features[idx] = feat[i]
-            self.logits[idx] = log[i]
+            self.logits[idx] = 0
+            self.logits[idx, :log.size(1)] = log[i]
             self.labels[idx] = lab[i]
             self._task_ids[idx] = tid[i]
             self.n_samples += 1
@@ -208,7 +241,7 @@ class DERStrategy(ContinualStrategy):
         pass
 
     def compute_loss(self, model, logits, labels, task_id, **kw):
-        """Replay loss at feature level. Expects 'features' in kwargs."""
+        """Replay loss at feature level."""
         batch = self.buffer.sample(logits.size(0))
         if batch is None:
             return torch.tensor(0.0, device=logits.device)
@@ -243,6 +276,7 @@ class DERStrategy(ContinualStrategy):
 
     def post_task(self, model, task_id, train_loader, **kw):
         """Extract features from current task and store in buffer."""
+        task_type = kw.get('task_type', 'single_label')
         model.eval()
         max_logit_dim = max(
             model.heads[k][-1].out_features for k in model.heads
@@ -250,16 +284,12 @@ class DERStrategy(ContinualStrategy):
 
         with torch.no_grad():
             for batch in train_loader:
-                if isinstance(batch, (list, tuple)):
-                    images, labels = batch[0].to(self.device), batch[1].to(self.device)
-                else:
-                    images = batch['image'].to(self.device)
-                    labels = batch['label'].to(self.device)
+                images, labels = _extract_cl_batch(batch, self.device, task_type)
 
                 features = model.extract_features(images)
                 logits = model(images, task_id=task_id)
 
-                if labels.dim() > 1:
+                if task_type != 'multi_label' and labels.dim() > 1:
                     labels = labels.argmax(dim=1)
 
                 padded = torch.zeros(logits.size(0), max_logit_dim, device=self.device)
@@ -375,20 +405,21 @@ class GenReplayStrategy(ContinualStrategy):
 
     def post_task(self, model, task_id, train_loader, **kw):
         """Train a VAE on extracted features from this task."""
+        task_type = kw.get('task_type', 'single_label')
         model.eval()
         all_features = []
         n_classes = 0
 
         with torch.no_grad():
             for batch in train_loader:
-                if isinstance(batch, (list, tuple)):
-                    images, labels = batch[0].to(self.device), batch[1].to(self.device)
+                images, labels = _extract_cl_batch(batch, self.device, task_type)
+
+                if task_type == 'multi_label':
+                    n_classes = max(n_classes, labels.size(-1))
                 else:
-                    images = batch['image'].to(self.device)
-                    labels = batch['label'].to(self.device)
-                if labels.dim() > 1:
-                    labels = labels.argmax(dim=1)
-                n_classes = max(n_classes, labels.max().item() + 1)
+                    if labels.dim() > 1:
+                        labels = labels.argmax(dim=1)
+                    n_classes = max(n_classes, labels.max().item() + 1)
                 feat = model.extract_features(images)
                 all_features.append(feat.cpu())
 

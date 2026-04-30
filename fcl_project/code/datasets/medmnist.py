@@ -44,13 +44,15 @@ class MedMNISTDataset(Dataset):
         'path': {
             'name': 'PathMNIST',
             'n_classes': 9,
+            'multi_label': False,
             'modality': 'Histopathology',
             'n_images': 89996,
             'url': 'https://zenodo.org/record/5208230/files/pathmnist.npz'
         },
         'chest': {
             'name': 'ChestMNIST',
-            'n_classes': 11,
+            'n_classes': 14,
+            'multi_label': True,
             'modality': 'Chest X-ray',
             'n_images': 112009,
             'url': 'https://zenodo.org/record/5208230/files/chestmnist.npz'
@@ -58,6 +60,7 @@ class MedMNISTDataset(Dataset):
         'derma': {
             'name': 'DermaMNIST',
             'n_classes': 7,
+            'multi_label': False,
             'modality': 'Dermatology',
             'n_images': 10015,
             'url': 'https://zenodo.org/record/5208230/files/dermamnist.npz'
@@ -65,6 +68,7 @@ class MedMNISTDataset(Dataset):
         'retina': {
             'name': 'RetinaMNIST',
             'n_classes': 5,
+            'multi_label': False,
             'modality': 'Retinal Fundus',
             'n_images': 9592,
             'url': 'https://zenodo.org/record/5208230/files/retinamnist.npz'
@@ -72,6 +76,7 @@ class MedMNISTDataset(Dataset):
         'blood': {
             'name': 'BloodMNIST',
             'n_classes': 8,
+            'multi_label': False,
             'modality': 'Blood Cell',
             'n_images': 17092,
             'url': 'https://zenodo.org/record/5208230/files/bloodmnist.npz'
@@ -79,6 +84,7 @@ class MedMNISTDataset(Dataset):
         'tissue': {
             'name': 'TissueMNIST',
             'n_classes': 8,
+            'multi_label': False,
             'modality': 'Histology',
             'n_images': 236386,
             'url': 'https://zenodo.org/record/5208230/files/tissuemnist.npz'
@@ -86,6 +92,7 @@ class MedMNISTDataset(Dataset):
         'organ': {
             'name': 'OrganMNIST',
             'n_classes': 11,
+            'multi_label': False,
             'modality': 'CT Organs',
             'n_images': 58850,
             'url': 'https://zenodo.org/record/5208230/files/organmnist.npz'
@@ -189,9 +196,15 @@ class MedMNISTDataset(Dataset):
         # Apply transforms
         image = self.transform(image)
         
+        if self.info.get('multi_label', False):
+            return {
+                'image': image,
+                'labels': torch.tensor(label, dtype=torch.float),
+                'dataset': self.dataset_name
+            }
         return {
             'image': image,
-            'label': torch.tensor(label, dtype=torch.long),
+            'label': torch.tensor(label.item() if hasattr(label, 'item') and np.ndim(label) == 0 else int(label), dtype=torch.long),
             'dataset': self.dataset_name
         }
     

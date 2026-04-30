@@ -8,15 +8,16 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from sklearn.metrics import roc_auc_score
 
 
 class AccuracyMatrix:
-    """Track R[i][j] = accuracy on task j after training through task i.
+    """Track R[i][j] = performance on task j after training through task i.
 
     Standard evaluation for continual learning. All CL metrics
     (BWT, FWT, forgetting, average accuracy) derive from this matrix.
+    For single-label tasks, values are accuracy; for multi-label, mean AUC-ROC.
     """
 
     def __init__(self, n_tasks: int):
@@ -72,48 +73,89 @@ class AccuracyMatrix:
         }
 
 
+def _extract_batch(
+    batch, device: str, task_type: str = 'single_label',
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Unified batch extraction for both single-label and multi-label tasks."""
+    if isinstance(batch, (list, tuple)):
+        return batch[0].to(device), batch[1].to(device)
+
+    images = batch['image'].to(device)
+    if task_type == 'multi_label':
+        labels = batch['labels'].to(device).float()
+    else:
+        key = 'label' if 'label' in batch else 'labels'
+        labels = batch[key].to(device)
+    return images, labels
+
+
 def evaluate_all_tasks(
     model: nn.Module,
     task_test_loaders: List[DataLoader],
     device: str,
     task_ids: Optional[List[int]] = None,
+    task_types: Optional[List[str]] = None,
 ) -> List[float]:
-    """Evaluate model accuracy on each task's test set.
+    """Evaluate model on each task's test set.
 
-    Args:
-        model: Trained model with forward(x, task_id) signature.
-        task_test_loaders: One DataLoader per task.
-        device: 'cuda' or 'cpu'.
-        task_ids: Explicit task IDs; defaults to [0, 1, ...].
-
-    Returns:
-        List of accuracy values, one per task.
+    For single-label tasks, returns accuracy.
+    For multi-label tasks, returns mean AUC-ROC across findings.
     """
     model.eval()
     if task_ids is None:
         task_ids = list(range(len(task_test_loaders)))
+    if task_types is None:
+        task_types = ['single_label'] * len(task_test_loaders)
 
-    accuracies = []
+    scores = []
     with torch.no_grad():
-        for tid, loader in zip(task_ids, task_test_loaders):
-            correct = 0
-            total = 0
-            for batch in loader:
-                if isinstance(batch, (list, tuple)):
-                    images, labels = batch[0].to(device), batch[1].to(device)
-                else:
-                    images = batch['image'].to(device)
-                    labels = batch['label'].to(device)
+        for tid, loader, ttype in zip(task_ids, task_test_loaders, task_types):
+            if ttype == 'multi_label':
+                scores.append(_evaluate_multi_label(model, loader, tid, device))
+            else:
+                scores.append(_evaluate_single_label(model, loader, tid, device))
+    return scores
 
-                logits = model(images, task_id=tid)
-                preds = logits.argmax(dim=1)
-                if labels.dim() > 1:
-                    labels = labels.argmax(dim=1)
-                correct += (preds == labels).sum().item()
-                total += labels.size(0)
 
-            accuracies.append(correct / max(total, 1))
-    return accuracies
+def _evaluate_single_label(
+    model: nn.Module, loader: DataLoader, tid: int, device: str,
+) -> float:
+    correct = 0
+    total = 0
+    for batch in loader:
+        images, labels = _extract_batch(batch, device, 'single_label')
+        logits = model(images, task_id=tid)
+        preds = logits.argmax(dim=1)
+        if labels.dim() > 1:
+            labels = labels.argmax(dim=1)
+        correct += (preds == labels).sum().item()
+        total += labels.size(0)
+    return correct / max(total, 1)
+
+
+def _evaluate_multi_label(
+    model: nn.Module, loader: DataLoader, tid: int, device: str,
+) -> float:
+    all_probs = []
+    all_labels = []
+    for batch in loader:
+        images, labels = _extract_batch(batch, device, 'multi_label')
+        logits = model(images, task_id=tid)
+        probs = torch.sigmoid(logits).detach().cpu().numpy()
+        all_probs.append(probs)
+        all_labels.append(labels.cpu().numpy())
+
+    all_probs = np.concatenate(all_probs)
+    all_labels = np.concatenate(all_labels)
+
+    try:
+        aucs = []
+        for i in range(all_labels.shape[1]):
+            if len(np.unique(all_labels[:, i])) > 1:
+                aucs.append(roc_auc_score(all_labels[:, i], all_probs[:, i]))
+        return float(np.mean(aucs)) if aucs else 0.0
+    except ValueError:
+        return 0.0
 
 
 def compute_roc_auc_per_task(
@@ -121,38 +163,46 @@ def compute_roc_auc_per_task(
     task_test_loaders: List[DataLoader],
     device: str,
     task_ids: Optional[List[int]] = None,
+    task_types: Optional[List[str]] = None,
 ) -> List[float]:
-    """Compute ROC-AUC for each task (macro-averaged for multiclass)."""
+    """Compute ROC-AUC for each task."""
     model.eval()
     if task_ids is None:
         task_ids = list(range(len(task_test_loaders)))
+    if task_types is None:
+        task_types = ['single_label'] * len(task_test_loaders)
 
     auc_scores = []
     with torch.no_grad():
-        for tid, loader in zip(task_ids, task_test_loaders):
-            all_probs = []
-            all_labels = []
-            for batch in loader:
-                if isinstance(batch, (list, tuple)):
-                    images, labels = batch[0].to(device), batch[1].to(device)
-                else:
-                    images = batch['image'].to(device)
-                    labels = batch['label'].to(device)
-
-                logits = model(images, task_id=tid)
-                probs = torch.softmax(logits, dim=1).cpu().numpy()
-                if labels.dim() > 1:
-                    labels = labels.argmax(dim=1)
-                all_probs.append(probs)
-                all_labels.append(labels.cpu().numpy())
-
-            all_probs = np.concatenate(all_probs)
-            all_labels = np.concatenate(all_labels)
-            try:
-                score = roc_auc_score(
-                    all_labels, all_probs, multi_class='ovr', average='macro'
+        for tid, loader, ttype in zip(task_ids, task_test_loaders, task_types):
+            if ttype == 'multi_label':
+                auc_scores.append(_evaluate_multi_label(model, loader, tid, device))
+            else:
+                auc_scores.append(
+                    _compute_single_label_auc(model, loader, tid, device)
                 )
-            except ValueError:
-                score = 0.0
-            auc_scores.append(score)
     return auc_scores
+
+
+def _compute_single_label_auc(
+    model: nn.Module, loader: DataLoader, tid: int, device: str,
+) -> float:
+    all_probs = []
+    all_labels = []
+    for batch in loader:
+        images, labels = _extract_batch(batch, device, 'single_label')
+        logits = model(images, task_id=tid)
+        probs = torch.softmax(logits, dim=1).cpu().numpy()
+        if labels.dim() > 1:
+            labels = labels.argmax(dim=1)
+        all_probs.append(probs)
+        all_labels.append(labels.cpu().numpy())
+
+    all_probs = np.concatenate(all_probs)
+    all_labels = np.concatenate(all_labels)
+    try:
+        return float(roc_auc_score(
+            all_labels, all_probs, multi_class='ovr', average='macro'
+        ))
+    except ValueError:
+        return 0.0

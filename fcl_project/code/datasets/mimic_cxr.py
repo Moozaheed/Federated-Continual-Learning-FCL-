@@ -143,6 +143,16 @@ class MIMICCXRDataset(Dataset):
         
         return torch.tensor(labels, dtype=torch.float)
     
+    @property
+    def labels(self):
+        """Single-label proxy for federated Dirichlet splits (argmax of multi-hot)."""
+        if not hasattr(self, '_cached_labels'):
+            self._cached_labels = np.array([
+                self._parse_labels(item.get('labels', {})).argmax().item()
+                for item in self.data
+            ]) if self.data else np.array([])
+        return self._cached_labels
+
     def __len__(self) -> int:
         """Return dataset size."""
         return len(self.data)

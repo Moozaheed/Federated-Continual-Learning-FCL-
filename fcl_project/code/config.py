@@ -321,7 +321,7 @@ class FedProxConfig:
 class ExperimentRunnerConfig:
     """Configuration for the main experiment runner."""
     seeds: List[int] = [42, 123, 456]
-    datasets: List[str] = ['path', 'blood', 'derma']
+    datasets: List[str] = ['path', 'blood', 'derma', 'retina', 'tissue', 'organ']
     fl_strategies: List[str] = ['fedavg', 'fedprox']
     cl_strategies: List[str] = ['finetune', 'ewc', 'der', 'generative_replay']
     n_clients: int = 4
