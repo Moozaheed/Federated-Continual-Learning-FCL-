@@ -86,7 +86,7 @@ class ShadowModel:
                 labels = batch['label'].to(self.device)
                 
                 optimizer.zero_grad()
-                logits = self.model(images)
+                logits = self.model(images) if not hasattr(self.model, 'heads') else self.model(images, task_id=getattr(self, '_task_id', 0))
                 loss = self.criterion(logits, labels).mean()
                 loss.backward()
                 optimizer.step()
@@ -119,7 +119,7 @@ class ShadowModel:
                 images = batch['image'].to(self.device)
                 labels = batch['label'].to(self.device)
                 
-                logits = self.model(images)
+                logits = self.model(images) if not hasattr(self.model, 'heads') else self.model(images, task_id=getattr(self, '_task_id', 0))
                 batch_losses = self.criterion(logits, labels).cpu().numpy()
                 losses.extend(batch_losses)
                 

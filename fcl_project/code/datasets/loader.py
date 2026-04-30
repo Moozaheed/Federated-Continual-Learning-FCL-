@@ -121,14 +121,21 @@ def create_federated_splits(
     elif split_type == 'non_iid':
         # Use Dirichlet distribution for non-IID split
         try:
-            # Get labels if available
-            labels = np.array([dataset[i]['labels'] for i in range(n_data)])
-            
-            # If multi-hot encoding, convert to primary label
-            if len(labels.shape) > 1 and labels.shape[1] > 1:
+            if hasattr(dataset, 'labels') and dataset.labels is not None:
+                raw = dataset.labels
+                labels = np.array(raw) if not isinstance(raw, np.ndarray) else raw
+            else:
+                sample = dataset[0]
+                label_key = 'label' if 'label' in sample else 'labels'
+                raw = [dataset[i][label_key] for i in range(n_data)]
+                labels = np.array([l.item() if isinstance(l, torch.Tensor) and l.dim() == 0
+                                   else (l.numpy() if isinstance(l, torch.Tensor) else l)
+                                   for l in raw])
+
+            if labels.ndim > 1 and labels.shape[1] > 1:
                 labels = np.argmax(labels, axis=1)
+            labels = labels.flatten().astype(int)
         except (TypeError, KeyError):
-            # Fall back to random split
             logger.warning("Could not extract labels for non-IID split, using random")
             np.random.shuffle(indices)
             split_size = n_data // num_clients

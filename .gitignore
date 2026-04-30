@@ -1,5 +1,31 @@
-venv/
+# Python
 __pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Virtual environments
+.venv/
+.venv-1/
+venv/
+
+# Data (too large for git — download via scripts/download_datasets.py)
+fcl_project/data/
+
+# Experiment outputs
+results/
+tmp/
+
+# Model weights
+*.pt
+*.pth
+
+# Logs
 *.log
-tmp/*.pt
+
+# IDE
 .vscode/
+.idea/
+
+# Claude Code
+.claude/

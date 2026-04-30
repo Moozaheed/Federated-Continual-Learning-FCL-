@@ -65,8 +65,8 @@ class TestDERBuffer(unittest.TestCase):
     
     def test_buffer_full_detection(self):
         """Test buffer full detection."""
-        # Add samples until full
-        num_batches = self.buffer_size // self.batch_size
+        # Add enough batches to fill (ceiling division)
+        num_batches = (self.buffer_size + self.batch_size - 1) // self.batch_size
         for _ in range(num_batches):
             self.buffer.add_data(
                 self.images,
@@ -236,10 +236,13 @@ class TestDERBuffer(unittest.TestCase):
                 torch.randn(5, 2)
             )
         
-        # Buffer should not exceed capacity
-        self.assertLessEqual(small_buffer.n_samples, 100)  # Counting total seen
-        # But stored samples should be <= buffer_size
+        # n_samples counts total seen (100), not stored count
+        self.assertEqual(small_buffer.n_samples, 100)
         self.assertIsNotNone(small_buffer.images)
+        # Stored count capped at buffer_size
+        batch = small_buffer.sample_batch(10)
+        self.assertIsNotNone(batch)
+        self.assertEqual(batch['images'].shape[0], 10)
 
 
 class TestDERLoss(unittest.TestCase):
@@ -335,32 +338,33 @@ class TestDERBufferIntegration(unittest.TestCase):
         import torch.nn as nn
         model = nn.Linear(13, 2)
         optimizer = torch.optim.Adam(model.parameters())
-        
+
         # Simulate training
         for step in range(3):
             # Generate batch
             x = torch.randn(16, 13)
             y = torch.randint(0, 2, (16,))
-            
+
             # Forward pass
             logits = model(x)
             loss = nn.CrossEntropyLoss()(logits, y)
-            
+
             # Backward pass
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            
-            # Add to buffer
+
+            # Add to buffer with properly shaped fake images
             with torch.no_grad():
                 current_logits = model(x)
+            fake_images = torch.randn(16, 3, 224, 224)
             self.buffer.add_data(
-                x.unsqueeze(1).expand(-1, 3, 224, 224),  # Fake images
+                fake_images,
                 x,
                 y,
                 current_logits
             )
-        
+
         # Sample from buffer
         batch = self.buffer.sample_batch(8)
         self.assertIsNotNone(batch)

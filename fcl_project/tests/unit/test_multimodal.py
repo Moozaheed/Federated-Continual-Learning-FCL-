@@ -207,15 +207,16 @@ class TestMultimodalFCLModel(unittest.TestCase):
     def test_multimodal_fusion_layer(self):
         """Test fusion layer operates correctly."""
         self.assertIsNotNone(self.model.fusion_layer)
-        
-        # Get feature dimensions
-        tabular_features = torch.randn(self.batch_size, 13)
-        image_features = torch.randn(self.batch_size, 576)  # MobileNet small
-        
-        # Concatenate and project through fusion
-        combined = torch.cat([tabular_features, image_features], dim=1)
+
+        # Use extracted feature dimensions (token_dim from transformer, not raw input)
+        tab_dim = self.model_config.token_dim
+        img_dim = self.model.image_branch.feature_dim
+        tabular_features = torch.randn(self.batch_size, tab_dim)
+        image_features = torch.randn(self.batch_size, img_dim)
+
+        combined = torch.cat([image_features, tabular_features], dim=1)
         fused = self.model.fusion_layer(combined)
-        
+
         self.assertEqual(fused.shape[0], self.batch_size)
     
     def test_multimodal_dropout_effect(self):

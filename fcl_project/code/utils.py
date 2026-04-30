@@ -188,7 +188,8 @@ def fit(
     use_ewc: bool = False,
     lambda_ewc: float = 0.5,
     verbose: bool = True,
-    **kwargs # Handle unexpected arguments
+    scheduler=None,
+    **kwargs
 ) -> Dict[str, List[float]]:
     """
     Train a PyTorch model with validation and optional EWC.
@@ -281,11 +282,14 @@ def fit(
         history['train_accuracy'].append(train_acc)
         history['val_accuracy'].append(val_acc)
         
+        if scheduler is not None:
+            scheduler.step()
+
         if verbose and (epoch + 1) % max(1, epochs // 5) == 0:
             print(f"Epoch {epoch+1:3d}/{epochs} | "
                   f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f} | "
                   f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}")
-    
+
     return history
 
 def save_model(model: torch.nn.Module, path: str):
@@ -344,81 +348,126 @@ def evaluate(
 # ============================================================================
 
 def compute_metrics(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
+    y_true,
+    y_pred,
     y_pred_proba: Optional[np.ndarray] = None
 ) -> Dict[str, float]:
     """
     Compute comprehensive evaluation metrics.
-    
-    Args:
-        y_true: Ground truth labels
-        y_pred: Predicted labels
-        y_pred_proba: Predicted probabilities (for ROC-AUC)
-    
-    Returns:
-        Dict of metrics
+
+    Accepts numpy arrays or torch tensors. Supports two calling conventions:
+      - compute_metrics(y_true, y_pred) where both are 1D
+      - compute_metrics(logits, labels) where logits is 2D and labels is 1D
+    In the second case, logits are auto-converted to predictions via argmax.
     """
+    y_true_is_2d = (isinstance(y_true, torch.Tensor) and y_true.dim() == 2) or \
+                   (isinstance(y_true, np.ndarray) and y_true.ndim == 2)
+    y_pred_is_1d = (isinstance(y_pred, torch.Tensor) and y_pred.dim() <= 1) or \
+                   (isinstance(y_pred, np.ndarray) and y_pred.ndim <= 1) or \
+                   (not isinstance(y_pred, (torch.Tensor, np.ndarray)))
+
+    if y_true_is_2d and y_pred_is_1d:
+        logits = y_true
+        labels = y_pred
+        if isinstance(logits, torch.Tensor):
+            logits_cpu = logits.detach().cpu()
+        else:
+            logits_cpu = torch.from_numpy(np.asarray(logits)).float()
+        if y_pred_proba is None:
+            y_pred_proba = torch.softmax(logits_cpu, dim=1).numpy()
+        y_pred = logits_cpu.argmax(dim=1).numpy()
+        if isinstance(labels, torch.Tensor):
+            y_true = labels.detach().cpu().numpy()
+        else:
+            y_true = np.asarray(labels)
+    else:
+        if isinstance(y_true, torch.Tensor):
+            y_true = y_true.detach().cpu().numpy()
+        if isinstance(y_pred, torch.Tensor):
+            y_pred_t = y_pred.detach().cpu()
+            if y_pred_t.dim() == 2:
+                if y_pred_proba is None:
+                    y_pred_proba = torch.softmax(y_pred_t, dim=1).numpy()
+                y_pred = y_pred_t.argmax(dim=1).numpy()
+            else:
+                y_pred = y_pred_t.numpy()
+
+    y_true = np.asarray(y_true).flatten()
+    y_pred = np.asarray(y_pred).flatten()
+
     metrics = {
-        'accuracy': accuracy_score(y_true, y_pred),
-        'precision': precision_score(y_true, y_pred, zero_division=0),
-        'recall': recall_score(y_true, y_pred, zero_division=0),
-        'f1': f1_score(y_true, y_pred, zero_division=0),
+        'accuracy': float(accuracy_score(y_true, y_pred)),
+        'precision': float(precision_score(y_true, y_pred, zero_division=0, average='macro')),
+        'recall': float(recall_score(y_true, y_pred, zero_division=0, average='macro')),
+        'f1': float(f1_score(y_true, y_pred, zero_division=0, average='macro')),
     }
-    
-    # Add ROC-AUC if probabilities provided
+
     if y_pred_proba is not None:
         try:
-            auc_val = roc_auc_score(y_true, y_pred_proba[:, 1])
-            metrics['roc_auc'] = auc_val
-        except:
+            if isinstance(y_pred_proba, torch.Tensor):
+                y_pred_proba = y_pred_proba.detach().cpu().numpy()
+            if y_pred_proba.ndim == 2 and y_pred_proba.shape[1] == 2:
+                auc_val = roc_auc_score(y_true, y_pred_proba[:, 1])
+            elif y_pred_proba.ndim == 2:
+                auc_val = roc_auc_score(y_true, y_pred_proba, multi_class='ovr', average='macro')
+            else:
+                auc_val = roc_auc_score(y_true, y_pred_proba)
+            metrics['roc_auc'] = float(auc_val)
+        except Exception:
             metrics['roc_auc'] = 0.0
-    
+
     return metrics
 
 
-def compute_backward_transfer(accuracy_per_task: List[float]) -> float:
+def compute_backward_transfer(accuracy_matrix) -> float:
     """
-    Compute Backward Transfer (BWT).
-    Measures how much new tasks hurt performance on old tasks.
-    
-    BWT = (1 / T-1) * sum(acc_i(task_j) - acc_i(task_T))
-    where T is number of tasks
-    
-    Positive BWT = improvement on old tasks (due to replay)
-    Negative BWT = forgetting
+    Compute Backward Transfer (BWT) per Lopez-Paz & Ranzato (2017).
+
+    Accepts either:
+      - np.ndarray of shape (T, T): accuracy matrix R where R[i][j] = accuracy
+        on task j after training through task i.
+        BWT = (1/(T-1)) * sum_{i=0}^{T-2} (R[T-1][i] - R[i][i])
+      - List[float]: legacy flat list (backward compat, deprecated).
+
+    Positive BWT = old tasks improved. Negative BWT = forgetting.
     """
-    if len(accuracy_per_task) < 2:
+    if isinstance(accuracy_matrix, np.ndarray) and accuracy_matrix.ndim == 2:
+        T = accuracy_matrix.shape[0]
+        if T < 2:
+            return 0.0
+        bwt = sum(accuracy_matrix[T - 1, i] - accuracy_matrix[i, i] for i in range(T - 1))
+        return bwt / (T - 1)
+
+    acc = list(accuracy_matrix)
+    if len(acc) < 2:
         return 0.0
-    
-    T = len(accuracy_per_task)
-    bwt_terms = []
-    
-    for i in range(T - 1):
-        # Improvement of task i after seeing all tasks
-        bwt_terms.append(accuracy_per_task[T - 1] - accuracy_per_task[i])
-    
-    return np.mean(bwt_terms) if bwt_terms else 0.0
+    T = len(acc)
+    return np.mean([acc[-1] - acc[i] for i in range(T - 1)])
 
 
-def compute_forward_transfer(accuracy_per_task: List[float]) -> float:
+def compute_forward_transfer(accuracy_matrix, baselines=None) -> float:
     """
-    Compute Forward Transfer (FWT).
-    Measures how much old tasks help with new tasks.
-    
-    FWT = (1 / T) * sum(acc_i(task_j) - baseline_i)
+    Compute Forward Transfer (FWT) per Lopez-Paz & Ranzato (2017).
+
+    Accepts either:
+      - np.ndarray of shape (T, T): accuracy matrix R.
+        FWT = (1/(T-1)) * sum_{i=1}^{T-1} (R[i-1][i] - b_i)
+      - List[float]: legacy flat list (backward compat).
     """
-    if len(accuracy_per_task) < 2:
+    if isinstance(accuracy_matrix, np.ndarray) and accuracy_matrix.ndim == 2:
+        T = accuracy_matrix.shape[0]
+        if T < 2:
+            return 0.0
+        if baselines is None:
+            baselines = np.full(T, 1.0 / T)
+        fwt = sum(accuracy_matrix[i - 1, i] - baselines[i] for i in range(1, T))
+        return fwt / (T - 1)
+
+    acc = list(accuracy_matrix)
+    if len(acc) < 2:
         return 0.0
-    
-    # Baseline: random classifier
     baseline = 0.5
-    
-    fwt_terms = []
-    for acc in accuracy_per_task[1:]:  # Skip first task
-        fwt_terms.append(acc - baseline)
-    
-    return np.mean(fwt_terms) if fwt_terms else 0.0
+    return np.mean([a - baseline for a in acc[1:]])
 
 
 # ============================================================================
@@ -747,10 +796,11 @@ def fit_multimodal(
     learning_rate: float = 1e-3,
     weight_decay: float = 1e-4,
     device: str = "cuda",
-    der_buffer = None,
+    der_buffer=None,
     alpha: float = 0.3,
     beta: float = 0.7,
-    verbose: bool = True
+    verbose: bool = True,
+    scheduler=None
 ) -> Dict[str, List[float]]:
     """
     Train multimodal model with optional DER++ replay buffer.
@@ -890,14 +940,96 @@ def fit_multimodal(
             else:
                 patience_counter += 1
         
-        # Logging
+        if scheduler is not None:
+            scheduler.step()
+
         if verbose and (epoch + 1) % max(1, num_epochs // 10) == 0:
             log_str = f"Epoch {epoch+1:3d}/{num_epochs} | Loss: {train_loss:.4f} | Acc: {train_acc:.2f}%"
             if val_loss is not None:
                 log_str += f" | Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}%"
             print(log_str)
-    
+
     return history
+
+
+# ============================================================================
+# UTILITY FUNCTIONS (required by test suite)
+# ============================================================================
+
+def get_batch(batch_dict: Dict[str, torch.Tensor], key: str) -> torch.Tensor:
+    """Extract a tensor from a batch dictionary by key."""
+    if key not in batch_dict:
+        raise KeyError(f"Key '{key}' not found in batch. Available: {list(batch_dict.keys())}")
+    return batch_dict[key]
+
+
+def add_privacy_noise(
+    logits: torch.Tensor,
+    epsilon: float,
+    delta: float = 1e-5
+) -> torch.Tensor:
+    """Add calibrated Gaussian noise for differential privacy."""
+    sensitivity = 1.0
+    sigma = sensitivity * np.sqrt(2 * np.log(1.25 / delta)) / epsilon
+    noise = torch.randn_like(logits) * sigma
+    return logits + noise
+
+
+def get_privacy_budget(
+    epsilon: float,
+    delta: float,
+    num_rounds: int
+) -> Dict[str, float]:
+    """Track privacy budget across federated rounds."""
+    return {
+        'epsilon': epsilon,
+        'delta': delta,
+        'num_rounds': num_rounds,
+        'epsilon_per_round': epsilon / np.sqrt(num_rounds),
+    }
+
+
+def get_param_count(model: torch.nn.Module) -> Dict[str, int]:
+    """Get parameter count breakdown for a model."""
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in model.parameters())
+    return {
+        'total_params': total,
+        'trainable_params': trainable,
+        'frozen_params': total - trainable,
+    }
+
+
+def count_parameters(model: torch.nn.Module) -> int:
+    """Count total trainable parameters in a model."""
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+def get_per_sample_loss(
+    logits: torch.Tensor,
+    labels: torch.Tensor
+) -> torch.Tensor:
+    """Compute per-sample cross-entropy loss (unreduced)."""
+    return torch.nn.functional.cross_entropy(logits, labels, reduction='none')
+
+
+# ============================================================================
+# LEARNING RATE SCHEDULING
+# ============================================================================
+
+def get_cosine_warmup_scheduler(
+    optimizer: torch.optim.Optimizer,
+    warmup_epochs: int,
+    total_epochs: int,
+    min_lr: float = 1e-6
+) -> torch.optim.lr_scheduler.LambdaLR:
+    """Cosine annealing with linear warmup."""
+    def lr_lambda(epoch):
+        if epoch < warmup_epochs:
+            return max(min_lr / optimizer.defaults['lr'], epoch / max(1, warmup_epochs))
+        progress = (epoch - warmup_epochs) / max(1, total_epochs - warmup_epochs)
+        return max(min_lr / optimizer.defaults['lr'], 0.5 * (1.0 + np.cos(np.pi * progress)))
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
 if __name__ == "__main__":

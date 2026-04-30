@@ -51,7 +51,6 @@ class DERBuffer:
         
         self.buffer_size = buffer_size
         self.device = device
-        self.current_index = 0
         self.n_samples = 0
         
         # Buffers (initialized lazily on first add_data call)
@@ -79,7 +78,7 @@ class DERBuffer:
     @property
     def occupancy_ratio(self) -> float:
         """Percentage of buffer filled (0.0 to 1.0)."""
-        return self.n_samples / self.buffer_size if self.buffer_size > 0 else 0.0
+        return min(self.n_samples, self.buffer_size) / self.buffer_size if self.buffer_size > 0 else 0.0
     
     def add_data(
         self,
@@ -157,29 +156,22 @@ class DERBuffer:
         except RuntimeError as e:
             raise RuntimeError(f"Failed to move data to device {self.device}: {e}")
         
-        # Add samples using reservoir sampling
+        # Add samples using Algorithm R (Vitter, 1985) reservoir sampling
         for i in range(batch_size):
             if self.n_samples < self.buffer_size:
-                # Buffer not full: add to next available slot
                 idx = self.n_samples
             else:
-                # Buffer full: use reservoir sampling
-                # Probability of replacing element: 1 / (n_samples + 1)
-                idx = np.random.randint(0, self.n_samples)
-                if idx >= self.buffer_size:
-                    # This sample shouldn't be stored (probability check failed)
+                j = np.random.randint(0, self.n_samples + 1)
+                if j >= self.buffer_size:
                     self.n_samples += 1
                     continue
-            
-            # Store sample components
+                idx = j
+
             self.images[idx] = images[i].detach()
             self.tabular[idx] = tabular[i].detach()
             self.labels[idx] = labels[i].detach()
             self.logits[idx] = logits[i].detach()
-            
-            # Increment counter only once
-            if self.n_samples < self.buffer_size:
-                self.n_samples += 1
+            self.n_samples += 1
     
     def _initialize_buffers(
         self,
@@ -276,19 +268,14 @@ class DERBuffer:
         if self.n_samples == 0:
             return None
         
-        # Determine actual batch size (may be smaller than requested)
-        actual_batch_size = min(batch_size, self.n_samples)
-        
-        # Uniform sampling with replacement
+        stored = min(self.n_samples, self.buffer_size)
+        actual_batch_size = min(batch_size, stored)
+
         indices = np.random.choice(
-            self.n_samples,
+            stored,
             size=actual_batch_size,
-            replace=(actual_batch_size > self.n_samples)
+            replace=(actual_batch_size > stored)
         )
-        
-        # Validate indices are within bounds
-        if np.any(indices >= self.buffer_size):
-            indices = indices % self.buffer_size
         
         # Return batch dictionary
         return {
@@ -310,7 +297,6 @@ class DERBuffer:
             self.logits.zero_()
         
         self.n_samples = 0
-        self.current_index = 0
     
     def get_stats(self) -> Dict[str, float]:
         """Get buffer statistics for monitoring."""

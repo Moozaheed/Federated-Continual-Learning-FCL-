@@ -32,7 +32,8 @@ class MobileNetExtractor(nn.Module):
         self,
         backbone_type: str = "mobilenet_v3_small",
         pretrained: bool = True,
-        weights_path: Optional[str] = None
+        weights_path: Optional[str] = None,
+        model_type: Optional[str] = None
     ):
         """
         Initialize MobileNetV3 feature extractor.
@@ -62,42 +63,40 @@ class MobileNetExtractor(nn.Module):
             ... )
         """
         super().__init__()
-        
-        # Load backbone
-        if backbone_type == "mobilenet_v3_small":
-            self.backbone = models.mobilenet_v3_small(pretrained=False)
-        elif backbone_type == "mobilenet_v3_large":
-            self.backbone = models.mobilenet_v3_large(pretrained=False)
-        else:
+
+        if model_type is not None:
+            type_map = {'small': 'mobilenet_v3_small', 'large': 'mobilenet_v3_large'}
+            backbone_type = type_map.get(model_type, f'mobilenet_v3_{model_type}')
+
+        self.backbone_type = backbone_type
+        backbone_fn = {
+            "mobilenet_v3_small": models.mobilenet_v3_small,
+            "mobilenet_v3_large": models.mobilenet_v3_large,
+        }.get(backbone_type)
+        if backbone_fn is None:
             raise ValueError(
                 f"Unsupported backbone: {backbone_type}. "
                 f"Supported: mobilenet_v3_small, mobilenet_v3_large"
             )
-        
-        self.backbone_type = backbone_type
-        
-        # Load weights (online or offline)
+
         if weights_path is not None:
-            # Offline mode: load from provided path
             if not os.path.exists(weights_path):
                 raise FileNotFoundError(
                     f"Weights file not found at {weights_path}. "
                     f"Please ensure the file exists for offline operation."
                 )
-            self.backbone.load_state_dict(torch.load(weights_path, map_location='cpu'))
-        elif pretrained:
-            # Online mode: download pretrained ImageNet weights
-            # Note: This requires internet connection
-            if backbone_type == "mobilenet_v3_small":
-                self.backbone = models.mobilenet_v3_small(pretrained=True)
-            else:
-                self.backbone = models.mobilenet_v3_large(pretrained=True)
+            self.backbone = backbone_fn(pretrained=False)
+            self.backbone.load_state_dict(torch.load(weights_path, map_location='cpu'), strict=False)
+        else:
+            self.backbone = backbone_fn(pretrained=pretrained)
         
         # Dynamically detect feature dimension
         self.feature_dim = self._get_feature_dim()
-        
+
         # Remove the classification head
         self.backbone.classifier = nn.Identity()
+
+        self.model = self.backbone
     
     @staticmethod
     def download_pretrained_weights(backbone_type: str = "mobilenet_v3_small", save_path: str = "/hospital/models/") -> str:

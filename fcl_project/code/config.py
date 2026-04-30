@@ -4,7 +4,7 @@ Centralized configuration for Federated Continual Learning experiments.
 """
 
 import torch
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 # ============================================================================
 # MODEL ARCHITECTURE PARAMETERS
@@ -12,67 +12,58 @@ from typing import Dict, List, Tuple
 
 class ModelConfig:
     """FT-Transformer architecture configuration."""
-    
-    # Input features
-    input_dim: int = 13  # Clinical features (UCI Heart Disease)
-    
-    # Feature tokenization
-    token_dim: int = 192  # Increased for advanced run (from 64)
-    n_feature_tokens: int = input_dim  # One token per feature
-    
-    # Prompt tuning
-    n_prompt_tokens: int = 10  # Increased for advanced run (from 5)
-    prompt_init_std: float = 0.02
-    
-    # Transformer blocks
-    n_transformer_blocks: int = 6  # Increased for advanced run (from 3)
-    n_attention_heads: int = 8
-    attention_dropout: float = 0.1
-    mlp_hidden_factor: int = 4  # Increased for advanced run (from 2)
-    mlp_dropout: float = 0.1
-    
-    # Output
-    output_dim: int = 2  # Binary classification (presence/absence of disease)
+
+    def __init__(self, **kwargs):
+        self.input_dim: int = kwargs.get('input_dim', kwargs.get('num_features', 13))
+        self.token_dim: int = kwargs.get('token_dim', kwargs.get('d_model', 192))
+        self.n_feature_tokens: int = kwargs.get('n_feature_tokens', self.input_dim)
+        self.n_prompt_tokens: int = kwargs.get('n_prompt_tokens', 10)
+        self.prompt_init_std: float = kwargs.get('prompt_init_std', 0.02)
+        self.n_transformer_blocks: int = kwargs.get('n_transformer_blocks', kwargs.get('n_layers', 6))
+        self.n_attention_heads: int = kwargs.get('n_attention_heads', kwargs.get('n_heads', 8))
+        self.attention_dropout: float = kwargs.get('attention_dropout', 0.1)
+        self.mlp_hidden_factor: int = kwargs.get('mlp_hidden_factor', kwargs.get('ffn_multiplier', 4))
+        self.mlp_dropout: float = kwargs.get('mlp_dropout', 0.1)
+        self.output_dim: int = kwargs.get('output_dim', kwargs.get('num_classes', 2))
+        for k, v in kwargs.items():
+            if not hasattr(self, k):
+                setattr(self, k, v)
 
 class MultimodalConfig:
     """Configuration for Multimodal branch (Image + Tabular)."""
-    enabled: bool = True
-    image_size: Tuple[int, int] = (224, 224)
-    image_channels: int = 3
-    cnn_backbone: str = "mobilenet_v3_small"
-    feature_dim: int = 576  # Output of MobileNetV3-Small GAP
-    fusion_strategy: str = "concat"  # "concat" or "attention"
-    hidden_dim: int = 256  # Dimension after fusion
+
+    def __init__(self, **kwargs):
+        self.enabled: bool = kwargs.get('enabled', kwargs.get('enable_multimodal', True))
+        self.image_size: Tuple[int, int] = kwargs.get('image_size', (224, 224))
+        self.image_channels: int = kwargs.get('image_channels', 3)
+        self.cnn_backbone: str = kwargs.get('cnn_backbone', kwargs.get('image_extractor_type', 'mobilenet_v3_small'))
+        self.feature_dim: int = kwargs.get('feature_dim', 576)
+        self.fusion_strategy: str = kwargs.get('fusion_strategy', kwargs.get('fusion_type', 'concat'))
+        self.hidden_dim: int = kwargs.get('hidden_dim', kwargs.get('fusion_dim', 256))
+        self.dropout: float = kwargs.get('dropout', 0.1)
+        for k, v in kwargs.items():
+            if not hasattr(self, k):
+                setattr(self, k, v)
 
 class DERConfig:
     """
     Dark Experience Replay (DER++) Configuration.
-    
+
     DER++ combines experience replay with knowledge distillation (logit matching)
     to prevent catastrophic forgetting in continual learning scenarios.
-    
+
     Reference: "Dark Experience for General Continual Learning" (Buzzega et al., 2021)
-    
-    Attributes:
-        enabled: Whether to use DER++ in training pipeline
-        buffer_size: Maximum samples stored in replay buffer (memory constraint)
-        alpha: Weight for logit matching loss (dark knowledge from past tasks)
-               Range: [0.0, 1.0], higher = more weight on replay logits
-        beta: Weight for standard cross-entropy loss on replay samples
-              Range: [0.0, 1.0], typically alpha + beta ≤ 1.0
-        batch_size: Number of samples to replay per batch (trade-off: memory vs stability)
-        use_logits: Whether to store and use logits (dark knowledge) from past models
-        sampling_strategy: "reservoir" (uniform) or "recent" (biased towards recent samples)
-        use_biased_weights: Whether to apply importance weighting to replay samples
     """
-    enabled: bool = True
-    buffer_size: int = 2000
-    alpha: float = 0.3      # Weight for logit matching (dark knowledge)
-    beta: float = 0.7       # Weight for standard replay (labels)
-    batch_size: int = 32
-    use_logits: bool = True # Store and use logits for knowledge distillation
-    sampling_strategy: str = "reservoir"  # "reservoir" or "recent"
-    use_biased_weights: bool = False  # For future importance weighting
+
+    def __init__(self, **kwargs):
+        self.enabled: bool = kwargs.get('enabled', True)
+        self.buffer_size: int = kwargs.get('buffer_size', 5000)
+        self.alpha: float = kwargs.get('alpha', 0.3)
+        self.beta: float = kwargs.get('beta', 0.7)
+        self.batch_size: int = kwargs.get('batch_size', 32)
+        self.use_logits: bool = kwargs.get('use_logits', True)
+        self.sampling_strategy: str = kwargs.get('sampling_strategy', 'reservoir')
+        self.use_biased_weights: bool = kwargs.get('use_biased_weights', False)
     
     def validate(self) -> bool:
         """
@@ -114,7 +105,7 @@ class DERConfig:
         
         return True
     
-    def get_config_dict(self) -> Dict[str, any]:
+    def get_config_dict(self) -> Dict[str, Any]:
         """
         Return configuration as dictionary for logging/tracking.
         
@@ -267,7 +258,7 @@ class DataConfig:
     
     # MIMIC-IV (future)
     mimic_enabled: bool = False
-    mimic_path: str = "/data/mimic-iv"
+    mimic_path: str = "fcl_project/data/mimic"
 
 
 # ============================================================================
@@ -314,6 +305,34 @@ class ExperimentConfig:
 
 
 # ============================================================================
+# FEDPROX PARAMETERS
+# ============================================================================
+
+class FedProxConfig:
+    """FedProx proximal term configuration."""
+    enabled: bool = False
+    mu: float = 0.01
+
+
+# ============================================================================
+# EXPERIMENT RUNNER PARAMETERS
+# ============================================================================
+
+class ExperimentRunnerConfig:
+    """Configuration for the main experiment runner."""
+    seeds: List[int] = [42, 123, 456]
+    datasets: List[str] = ['path', 'blood', 'derma']
+    fl_strategies: List[str] = ['fedavg', 'fedprox']
+    cl_strategies: List[str] = ['finetune', 'ewc', 'der', 'generative_replay']
+    n_clients: int = 4
+    non_iid_alphas: List[float] = [0.5]
+    fl_rounds: int = 20
+    local_epochs: int = 5
+    warmup_epochs: int = 5
+    output_dir: str = 'results'
+
+
+# ============================================================================
 # COMPOSITE CONFIGURATION CLASS
 # ============================================================================
 
@@ -331,6 +350,9 @@ class FCLConfig:
         self.data = DataConfig()
         self.logging = LoggingConfig()
         self.experiment = ExperimentConfig()
+        self.fedprox = FedProxConfig()
+        self.experiment_runner = ExperimentRunnerConfig()
+        self.cl = self.continual
     
     def to_dict(self) -> Dict:
         """Convert all configs to dictionary."""
