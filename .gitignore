@@ -27,5 +27,8 @@ tmp/
 .vscode/
 .idea/
 
+# Notebooks
+FCL_Colab_Setup.ipynb
+
 # Claude Code
 .claude/

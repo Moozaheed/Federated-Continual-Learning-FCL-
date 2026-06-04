@@ -15,6 +15,7 @@ Includes:
 """
 
 import logging
+import urllib.request
 from typing import Tuple, List, Dict, Optional
 from pathlib import Path
 
@@ -142,16 +143,34 @@ class MedMNISTDataset(Dataset):
         
         return transforms.Compose(transform_list)
     
+    def _download(self, data_file: Path) -> None:
+        """Download .npz from Zenodo with a progress indicator."""
+        url = self.info['url']
+        logger.info(f"Downloading {self.info['name']} from {url} ...")
+        data_file.parent.mkdir(parents=True, exist_ok=True)
+
+        def _reporthook(count, block_size, total_size):
+            if total_size > 0:
+                pct = min(100, count * block_size * 100 // total_size)
+                print(f"\r  {self.info['name']}: {pct}%", end="", flush=True)
+
+        urllib.request.urlretrieve(url, data_file, reporthook=_reporthook)
+        print()
+        logger.info(f"Saved to {data_file}")
+
     def _load_data(self) -> Tuple[np.ndarray, np.ndarray]:
-        """Load data from .npz file."""
+        """Load data from .npz file, downloading it first if missing."""
         data_file = self.root_dir / f'{self.dataset_name}mnist.npz'
-        
+
         if not data_file.exists():
-            logger.warning(
-                f"Data file not found: {data_file}. "
-                f"Download from {self.info['url']}"
-            )
-            return np.array([]), np.array([])
+            try:
+                self._download(data_file)
+            except Exception as exc:
+                logger.error(
+                    f"Auto-download failed for {self.info['name']}: {exc}. "
+                    f"Download manually from {self.info['url']} and place it at {data_file}"
+                )
+                return np.array([]), np.array([])
         
         data = np.load(data_file)
         

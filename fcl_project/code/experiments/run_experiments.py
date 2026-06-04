@@ -252,11 +252,18 @@ def run_single_experiment(
             tasks[task_id]['train'], n_clients, alpha,
             seed=seed + task_id, task_type=task_type,
         )
+
+        if all(len(s) == 0 for s in client_subsets):
+            raise RuntimeError(
+                f"Task {task_id} ({tasks[task_id]['name']}) has 0 training samples. "
+                f"Check that the .npz file exists in data/medmnist/ and was downloaded correctly."
+            )
+
         client_loaders = [
             DataLoader(s, batch_size=batch_size, shuffle=True, num_workers=2)
-            for s in client_subsets
+            for s in client_subsets if len(s) > 0
         ]
-        client_weights = [len(s) for s in client_subsets]
+        client_weights = [len(s) for s in client_subsets if len(s) > 0]
         criterion = get_criterion(task_type)
 
         for fl_round in range(fl_rounds):
