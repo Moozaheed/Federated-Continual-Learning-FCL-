@@ -314,7 +314,7 @@ class TestFusionLayer(unittest.TestCase):
         )
         
         output = fusion(combined)
-        loss = output.sum()
+        loss = (output ** 2).sum()
         loss.backward()
         
         self.assertIsNotNone(combined.grad)
